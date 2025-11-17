@@ -1,7 +1,5 @@
 #!/system/bin/sh
 
-set -eu
-
 # 配置项（按需修改）
 # 代理端口（透明代理程序监听端口）
 PROXY_TCP_PORT="1536"
@@ -17,15 +15,16 @@ DNS_PORT="1053"
 MOBILE_INTERFACE="rmnet_data+"
 # WiFi 接口
 WIFI_INTERFACE="wlan0"
-# 热点接口
+# 热点 接口
 HOTSPOT_INTERFACE="wlan2"
-# USB 与蓝牙网络热点接口
-OTHER_INTERFACE="rndis+"
+# USB 共享接口
+USB_INTERFACE="rndis+"
 
 # 代理开关
 PROXY_MOBILE=1
 PROXY_WIFI=1
 PROXY_HOTSPOT=0
+PROXY_USB=0
 PROXY_TCP=1
 PROXY_UDP=1
 PROXY_IPV6=0
@@ -199,8 +198,6 @@ safe_chain_create6() {
 }
 
 setup_tproxy_chain4() {
-
-    # 需要的链
     for c in PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN; do
         safe_chain_create mangle "$c"
     done
@@ -232,30 +229,8 @@ setup_tproxy_chain4() {
         iptables -t mangle -A BYPASS_IP -d "$subnet4" ! -p udp -j ACCEPT
     done
 
-    # DNS 劫持
-    case "${DNS_HIJACK_ENABLE:-1}" in
-        1)
-            # DNS_HIJACK_PRE 处理来自接口的 DNS （PREROUTING）
-            iptables -t mangle -A DNS_HIJACK_PRE -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE"
-            iptables -t mangle -A DNS_HIJACK_PRE -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE"
-            # DNS_HIJACK_OUT 用于 OUTPUT 的本地 DNS 劫持
-            iptables -t mangle -A DNS_HIJACK_OUT -p tcp --dport 53 -j MARK --set-mark "$MARK_VALUE"
-            iptables -t mangle -A DNS_HIJACK_OUT -p udp --dport 53 -j MARK --set-mark "$MARK_VALUE"
-            ;;
-        2)
-            # 非 TPROXY 方式接收 DNS 流量
-            safe_chain_create nat "NAT_DNS_HIJACK"
-            iptables -t nat -A NAT_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-
-            [ "${PROXY_MOBILE:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
-            [ "${PROXY_WIFI:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
-
-            iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
-            iptables -t nat -A OUTPUT -j NAT_DNS_HIJACK
-            ;;
-    esac
-
     # 处理接口
+    iptables -t mangle -A PROXY_INTERFACE -i lo -j RETURN
     if [ "${PROXY_MOBILE:-1}" -eq 1 ]; then
         iptables -t mangle -A PROXY_INTERFACE -i "$MOBILE_INTERFACE" -j RETURN
     else
@@ -277,6 +252,13 @@ setup_tproxy_chain4() {
     else
         iptables -t mangle -A BYPASS_INTERFACE -o "$HOTSPOT_INTERFACE" -j ACCEPT
     fi
+    if [ "${PROXY_USB:-0}" -eq 1 ]; then
+        iptables -t mangle -A PROXY_INTERFACE -i "$USB_INTERFACE" -j RETURN
+    else
+        iptables -t mangle -A PROXY_INTERFACE -i "$USB_INTERFACE" -j ACCEPT
+        iptables -t mangle -A BYPASS_INTERFACE -o "$USB_INTERFACE" -j ACCEPT
+    fi
+    iptables -t mangle -A PROXY_INTERFACE -j ACCEPT
 
     # 绕过本机代理程序自身
     iptables -t mangle -A APP_CHAIN -m owner --uid-owner 0 --gid-owner 3005 -j ACCEPT
@@ -305,6 +287,29 @@ setup_tproxy_chain4() {
         esac
     fi
 
+    # DNS 劫持
+    case "${DNS_HIJACK_ENABLE:-1}" in
+        1)
+            # DNS_HIJACK_PRE 处理来自接口的 DNS （PREROUTING）
+            iptables -t mangle -A DNS_HIJACK_PRE -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE"
+            iptables -t mangle -A DNS_HIJACK_PRE -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE"
+            # DNS_HIJACK_OUT 用于 OUTPUT 的本地 DNS 劫持
+            iptables -t mangle -A DNS_HIJACK_OUT -p tcp --dport 53 -j MARK --set-mark "$MARK_VALUE"
+            iptables -t mangle -A DNS_HIJACK_OUT -p udp --dport 53 -j MARK --set-mark "$MARK_VALUE"
+            ;;
+        2)
+            # 非 TPROXY 方式接收 DNS 流量
+            safe_chain_create nat "NAT_DNS_HIJACK"
+            iptables -t nat -A NAT_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+
+            [ "${PROXY_MOBILE:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
+            [ "${PROXY_WIFI:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
+
+            iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
+            iptables -t nat -A OUTPUT -j NAT_DNS_HIJACK
+            ;;
+    esac
+
     # 处理透明代理
     iptables -t mangle -A PROXY_PREROUTING -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE"
     iptables -t mangle -A PROXY_PREROUTING -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE"
@@ -313,8 +318,6 @@ setup_tproxy_chain4() {
 }
 
 setup_tproxy_chain6() {
-
-    # 需要的链
     for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6; do
         safe_chain_create6 mangle "$c6"
     done
@@ -332,44 +335,22 @@ setup_tproxy_chain6() {
     ip6tables -t mangle -A PROXY_PREROUTING6 -j PROXY_INTERFACE6
     ip6tables -t mangle -A PROXY_PREROUTING6 -j DNS_HIJACK_PRE6
 
-    ip6tables -t mangle -A PROXY_OUTPUT -j BYPASS_IP6
-    ip6tables -t mangle -A PROXY_OUTPUT -j BYPASS_INTERFACE6
-    ip6tables -t mangle -A PROXY_OUTPUT -j APP_CHAIN6
-    ip6tables -t mangle -A PROXY_OUTPUT -j DNS_HIJACK_OUT6
+    ip6tables -t mangle -A PROXY_OUTPUT6 -j BYPASS_IP6
+    ip6tables -t mangle -A PROXY_OUTPUT6 -j BYPASS_INTERFACE6
+    ip6tables -t mangle -A PROXY_OUTPUT6 -j APP_CHAIN6
+    ip6tables -t mangle -A PROXY_OUTPUT6 -j DNS_HIJACK_OUT6
 
     # 内网地址绕过
     for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
         100::/64 64:ff9b::/96 2001::/32 2001:10::/28 \
         2001:20::/28 2001:db8::/32 \
         2002::/16 fe80::/10 ff00::/8; do
-        ip6tables -t mangle -A BYPASS_IP -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
-        ip6tables -t mangle -A BYPASS_IP -d "$subnet6" ! -p udp -j ACCEPT
+        ip6tables -t mangle -A BYPASS_IP6 -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
+        ip6tables -t mangle -A BYPASS_IP6 -d "$subnet6" ! -p udp -j ACCEPT
     done
 
-    # DNS 劫持
-    case "${DNS_HIJACK_ENABLE:-1}" in
-        1)
-            # DNS_HIJACK_PRE6 处理来自接口的 DNS （PREROUTING）
-            ip6tables -t mangle -A DNS_HIJACK_PRE6 -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE6"
-            ip6tables -t mangle -A DNS_HIJACK_PRE6 -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE6"
-            # DNS_HIJACK_OUT6 用于 OUTPUT 的本地 DNS 劫持
-            ip6tables -t mangle -A DNS_HIJACK_OUT6 -p tcp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
-            ip6tables -t mangle -A DNS_HIJACK_OUT6 -p udp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
-            ;;
-        2)
-            # 非 TPROXY 方式接收 DNS 流量
-            safe_chain_create6 nat "NAT_DNS_HIJACK"
-            ip6tables -t nat -A NAT_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-
-            [ "${PROXY_MOBILE:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
-            [ "${PROXY_WIFI:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
-
-            ip6tables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
-            ip6tables -t nat -A OUTPUT -j NAT_DNS_HIJACK
-            ;;
-    esac
-
     # 处理接口
+    ip6tables -t mangle -A PROXY_INTERFACE6 -i lo -j RETURN
     if [ "${PROXY_MOBILE:-1}" -eq 1 ]; then
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j RETURN
     else
@@ -383,14 +364,19 @@ setup_tproxy_chain6() {
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$WIFI_INTERFACE" -j ACCEPT
     fi
     if [ "${PROXY_HOTSPOT:-0}" -eq 1 ]; then
-        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
-            ip6tables -t mangle -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" ! -s 192.168.43.0/24 -j RETURN
-        else
+        if [ "$HOTSPOT_INTERFACE" != "$WIFI_INTERFACE" ]; then
             ip6tables -t mangle -A PROXY_INTERFACE6 -i "$HOTSPOT_INTERFACE" -j RETURN
         fi
     else
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$HOTSPOT_INTERFACE" -j ACCEPT
     fi
+    if [ "${PROXY_USB:-0}" -eq 1 ]; then
+        ip6tables -t mangle -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j RETURN
+    else
+        ip6tables -t mangle -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j ACCEPT
+        ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$USB_INTERFACE" -j ACCEPT
+    fi
+    ip6tables -t mangle -A PROXY_INTERFACE6 -j ACCEPT
 
     # 绕过本机代理程序自身
     ip6tables -t mangle -A APP_CHAIN6 -m owner --uid-owner 0 --gid-owner 3005 -j ACCEPT
@@ -419,6 +405,29 @@ setup_tproxy_chain6() {
         esac
     fi
 
+    # DNS 劫持
+    case "${DNS_HIJACK_ENABLE:-1}" in
+        1)
+            # DNS_HIJACK_PRE 处理来自接口的 DNS （PREROUTING）
+            ip6tables -t mangle -A DNS_HIJACK_PRE6 -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE6"
+            ip6tables -t mangle -A DNS_HIJACK_PRE6 -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE6"
+            # DNS_HIJACK_OUT 用于 OUTPUT 的本地 DNS 劫持
+            ip6tables -t mangle -A DNS_HIJACK_OUT6 -p tcp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
+            ip6tables -t mangle -A DNS_HIJACK_OUT6 -p udp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
+            ;;
+        2)
+            # 非 TPROXY 方式接收 DNS 流量
+            safe_chain_create nat "NAT_DNS_HIJACK6"
+            ip6tables -t nat -A NAT_DNS_HIJACK6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+
+            [ "${PROXY_MOBILE:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
+            [ "${PROXY_WIFI:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6
+
+            ip6tables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
+            ip6tables -t nat -A OUTPUT -j NAT_DNS_HIJACK6
+            ;;
+    esac
+
     # 处理透明代理
     ip6tables -t mangle -A PROXY_PREROUTING6 -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE6"
     ip6tables -t mangle -A PROXY_PREROUTING6 -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE6"
@@ -431,8 +440,8 @@ setup_routing4() {
         echo "[DRY-RUN] 跳过实际路由设置"
         return
     fi
-    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" || true
-    ip_route del local default dev lo table "$TABLE_ID" || true
+    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" > /dev/null 2>&1 || true
+    ip_route del local default dev lo table "$TABLE_ID" > /dev/null 2>&1 || true
     ip_rule add fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"
     ip_route add local default dev lo table "$TABLE_ID"
     echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -443,11 +452,11 @@ setup_routing6() {
         echo "[DRY-RUN] 跳过实际路由设置"
         return
     fi
-    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" || true
-    ip6_route del local default dev lo table "$TABLE_ID" || true
+    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" > /dev/null 2>&1 || true
+    ip6_route del local default dev lo table "$TABLE_ID" > /dev/null 2>&1 || true
     ip6_rule add fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"
     ip6_route add local default dev lo table "$TABLE_ID"
-    echo 1 > /proc/sys/net/ipv4/ip_forward
+    echo 1 > /proc/sys/net/ipv6/ip_forward
 }
 
 cleanup_routing4() {
@@ -455,8 +464,8 @@ cleanup_routing4() {
         echo "[DRY-RUN] 跳过实际路由设置"
         return
     fi
-    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" || true
-    ip_route del local default dev lo table "$TABLE_ID" || true
+    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"
+    ip_route del local default dev lo table "$TABLE_ID"
     echo 0 > /proc/sys/net/ipv4/ip_forward
 }
 
@@ -465,9 +474,9 @@ cleanup_routing6() {
         echo "[DRY-RUN] 跳过实际路由设置"
         return
     fi
-    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" || true
-    ip6_route del local default dev lo table "$TABLE_ID" || true
-    echo 0 > /proc/sys/net/ipv4/ip_forward
+    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"
+    ip6_route del local default dev lo table "$TABLE_ID"
+    echo 0 > /proc/sys/net/ipv6/ip_forward
 }
 
 cleanup_tproxy_chain4() {
@@ -494,12 +503,14 @@ cleanup_tproxy_chain4() {
         iptables -t mangle -X "$c"
     done
 
-    iptables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK || true
-    iptables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK || true
-    iptables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN || true
-    iptables -t nat -D OUTPUT -j NAT_DNS_HIJACK || true
-    iptables -t nat -F NAT_DNS_HIJACK || true
-    iptables -t nat -X NAT_DNS_HIJACK || true
+    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
+        iptables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK 
+        iptables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
+        iptables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
+        iptables -t nat -D OUTPUT -j NAT_DNS_HIJACK
+        iptables -t nat -F NAT_DNS_HIJACK
+        iptables -t nat -X NAT_DNS_HIJACK
+    fi
 }
 
 cleanup_tproxy_chain6() {
@@ -526,12 +537,14 @@ cleanup_tproxy_chain6() {
         ip6tables -t mangle -X "$c6"
     done
 
-    ip6tables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6 || true
-    ip6tables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6 || true
-    ip6tables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN || true
-    ip6tables -t nat -D OUTPUT -j NAT_DNS_HIJACK6 || true
-    ip6tables -t nat -F NAT_DNS_HIJACK6 || true
-    ip6tables -t nat -X NAT_DNS_HIJACK6 || true
+    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
+        ip6tables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
+        ip6tables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6
+        ip6tables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner 0 --gid-owner 3005 -j RETURN
+        ip6tables -t nat -D OUTPUT -j NAT_DNS_HIJACK6
+        ip6tables -t nat -F NAT_DNS_HIJACK6
+        ip6tables -t nat -X NAT_DNS_HIJACK6
+    fi
 }
 
 # 主流程
