@@ -55,6 +55,7 @@ APP_PROXY_MODE="blacklist"
 # Dry-run 模式（默认关闭）
 DRY_RUN=0
 
+# 检查内核功能
 check_kernel_feature() {
     feature="$1"
     config_name="CONFIG_${feature}"
@@ -64,6 +65,15 @@ check_kernel_feature() {
     else
         # 备用方法：检查模块是否加载（仅检测模块，内置功能需其他方法比如检查 dmesg）
         # lsmod | grep -q "$feature" || return 1
+        return 1
+    fi
+}
+
+# 检查是否支持TPROXY
+check_tproxy_support() {
+    if check_kernel_feature "NETFILTER_XT_TARGET_TPROXY"; then
+        return 0
+    else
         return 1
     fi
 }
@@ -353,6 +363,111 @@ setup_tproxy_chain4() {
     iptables -t mangle -A PROXY_OUTPUT -j MARK --set-mark "$MARK_VALUE"
 }
 
+setup_redirect_chain4() {
+    for c in PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN; do
+        safe_chain_create nat "$c"
+    done
+
+    # 只处理TCP
+    iptables -t nat -I PREROUTING -p tcp -j PROXY_PREROUTING
+    iptables -t nat -I OUTPUT -p tcp -j PROXY_OUTPUT
+
+    iptables -t nat -A PROXY_PREROUTING -j BYPASS_IP
+    iptables -t nat -A PROXY_PREROUTING -j PROXY_INTERFACE
+    iptables -t nat -A PROXY_PREROUTING -j DNS_HIJACK_PRE
+
+    iptables -t nat -A PROXY_OUTPUT -j BYPASS_IP
+    iptables -t nat -A PROXY_OUTPUT -j BYPASS_INTERFACE
+    iptables -t nat -A PROXY_OUTPUT -j APP_CHAIN
+    iptables -t nat -A PROXY_OUTPUT -j DNS_HIJACK_OUT
+
+    # 内网地址绕过
+    for subnet4 in 0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 \
+        169.254.0.0/16 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 \
+        192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 \
+        224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
+        iptables -t nat -A BYPASS_IP -d "$subnet4" -p udp ! --dport 53 -j ACCEPT
+        iptables -t nat -A BYPASS_IP -d "$subnet4" ! -p udp -j ACCEPT
+    done
+
+    # 处理接口
+    iptables -t nat -A PROXY_INTERFACE -i lo -j RETURN
+    if [ "${PROXY_MOBILE:-1}" -eq 1 ]; then
+        iptables -t nat -A PROXY_INTERFACE -i "$MOBILE_INTERFACE" -j RETURN
+    else
+        iptables -t nat -A PROXY_INTERFACE -i "$MOBILE_INTERFACE" -j ACCEPT
+        iptables -t nat -A BYPASS_INTERFACE -o "$MOBILE_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_WIFI:-1}" -eq 1 ]; then
+        iptables -t nat -A PROXY_INTERFACE -i "$WIFI_INTERFACE" -j RETURN
+    else
+        iptables -t nat -A PROXY_INTERFACE -i "$WIFI_INTERFACE" -j ACCEPT
+        iptables -t nat -A BYPASS_INTERFACE -o "$WIFI_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_HOTSPOT:-0}" -eq 1 ]; then
+        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
+            iptables -t nat -A PROXY_INTERFACE -i "$WIFI_INTERFACE" ! -s 192.168.43.0/24 -j RETURN
+        else
+            iptables -t nat -A PROXY_INTERFACE -i "$HOTSPOT_INTERFACE" -j RETURN
+        fi
+    else
+        iptables -t nat -A BYPASS_INTERFACE -o "$HOTSPOT_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_USB:-0}" -eq 1 ]; then
+        iptables -t nat -A PROXY_INTERFACE -i "$USB_INTERFACE" -j RETURN
+    else
+        iptables -t nat -A PROXY_INTERFACE -i "$USB_INTERFACE" -j ACCEPT
+        iptables -t nat -A BYPASS_INTERFACE -o "$USB_INTERFACE" -j ACCEPT
+    fi
+    iptables -t nat -A PROXY_INTERFACE -j ACCEPT
+
+    # 绕过本机代理程序自身
+    if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+        iptables -t nat -A APP_CHAIN -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
+    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK"; then
+        iptables -t mangle -A APP_CHAIN -m mark --mark "$ROUTING_MARK" -j ACCEPT
+    fi
+    # 处理黑白名单
+    if [ "${APP_PROXY_ENABLE:-0}" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+        # 根据模式填充
+        case "$APP_PROXY_MODE" in
+            blacklist)
+                if [ -n "$BYPASS_APPS_LIST" ]; then
+                    uids=$(find_packages_uid "$BYPASS_APPS_LIST" || true)
+                    for uid in $uids; do
+                        [ -n "$uid" ] && iptables -t nat -A APP_CHAIN -m owner --uid-owner "$uid" -j ACCEPT
+                    done
+                fi
+                iptables -t nat -A APP_CHAIN -j RETURN
+                ;;
+            whitelist)
+                if [ -n "$PROXY_APPS_LIST" ]; then
+                    uids=$(find_packages_uid "$PROXY_APPS_LIST" || true)
+                    for uid in $uids; do
+                        [ -n "$uid" ] && iptables -t nat -A APP_CHAIN -m owner --uid-owner "$uid" -j RETURN
+                    done
+                fi
+                iptables -t nat -A APP_CHAIN -j ACCEPT
+                ;;
+        esac
+    fi
+
+    # DNS 劫持
+    case "${DNS_HIJACK_ENABLE:-1}" in
+        1|2)
+            # 使用REDIRECT方式处理DNS
+            iptables -t nat -A DNS_HIJACK_PRE -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            iptables -t nat -A DNS_HIJACK_PRE -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            iptables -t nat -A DNS_HIJACK_OUT -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            iptables -t nat -A DNS_HIJACK_OUT -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            ;;
+    esac
+
+    # 处理透明代理
+    iptables -t nat -A PROXY_PREROUTING -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+    iptables -t nat -A PROXY_OUTPUT -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+}
+
 setup_tproxy_chain6() {
     for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6; do
         safe_chain_create6 mangle "$c6"
@@ -462,7 +577,7 @@ setup_tproxy_chain6() {
         2)
             # 非 TPROXY 方式接收 DNS 流量
             if check_kernel_feature "IP6_NF_NAT" && check_kernel_feature "IP6_NF_TARGET_REDIRECT"; then
-                safe_chain_create nat "NAT_DNS_HIJACK6"
+                safe_chain_create6 nat "NAT_DNS_HIJACK6"
                 ip6tables -t nat -A NAT_DNS_HIJACK6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 
                 [ "${PROXY_MOBILE:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
@@ -479,6 +594,116 @@ setup_tproxy_chain6() {
     ip6tables -t mangle -A PROXY_PREROUTING6 -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE6"
 
     ip6tables -t mangle -A PROXY_OUTPUT6 -j MARK --set-mark "$MARK_VALUE6"
+}
+
+setup_redirect_chain6() {
+    if ! check_kernel_feature "IP6_NF_NAT" || ! check_kernel_feature "IP6_NF_TARGET_REDIRECT"; then
+        echo "IPv6: 内核不支持IPv6 NAT或REDIRECT，跳过IPv6代理设置"
+        return
+    fi
+
+    for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6; do
+        safe_chain_create6 nat "$c6"
+    done
+
+    # 只处理TCP
+    ip6tables -t nat -I PREROUTING -p tcp -j PROXY_PREROUTING6
+    ip6tables -t nat -I OUTPUT -p tcp -j PROXY_OUTPUT6
+
+    ip6tables -t nat -A PROXY_PREROUTING6 -j BYPASS_IP6
+    ip6tables -t nat -A PROXY_PREROUTING6 -j PROXY_INTERFACE6
+    ip6tables -t nat -A PROXY_PREROUTING6 -j DNS_HIJACK_PRE6
+
+    ip6tables -t nat -A PROXY_OUTPUT6 -j BYPASS_IP6
+    ip6tables -t nat -A PROXY_OUTPUT6 -j BYPASS_INTERFACE6
+    ip6tables -t nat -A PROXY_OUTPUT6 -j APP_CHAIN6
+    ip6tables -t nat -A PROXY_OUTPUT6 -j DNS_HIJACK_OUT6
+
+    # 内网地址绕过
+    for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
+        100::/64 64:ff9b::/96 2001::/32 2001:10::/28 \
+        2001:20::/28 2001:db8::/32 \
+        2002::/16 fe80::/10 ff00::/8; do
+        ip6tables -t nat -A BYPASS_IP6 -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
+        ip6tables -t nat -A BYPASS_IP6 -d "$subnet6" ! -p udp -j ACCEPT
+    done
+
+    # 处理接口
+    ip6tables -t nat -A PROXY_INTERFACE6 -i lo -j RETURN
+    if [ "${PROXY_MOBILE:-1}" -eq 1 ]; then
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j RETURN
+    else
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j ACCEPT
+        ip6tables -t nat -A BYPASS_INTERFACE6 -o "$MOBILE_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_WIFI:-1}" -eq 1 ]; then
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j RETURN
+    else
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j ACCEPT
+        ip6tables -t nat -A BYPASS_INTERFACE6 -o "$WIFI_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_HOTSPOT:-0}" -eq 1 ]; then
+        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
+            ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" ! -s 192.168.43.0/24 -j RETURN
+        else
+            ip6tables -t nat -A PROXY_INTERFACE6 -i "$HOTSPOT_INTERFACE" -j RETURN
+        fi
+    else
+        ip6tables -t nat -A BYPASS_INTERFACE6 -o "$HOTSPOT_INTERFACE" -j ACCEPT
+    fi
+    if [ "${PROXY_USB:-0}" -eq 1 ]; then
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j RETURN
+    else
+        ip6tables -t nat -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j ACCEPT
+        ip6tables -t nat -A BYPASS_INTERFACE6 -o "$USB_INTERFACE" -j ACCEPT
+    fi
+    ip6tables -t nat -A PROXY_INTERFACE6 -j ACCEPT
+
+    # 绕过本机代理程序自身
+    if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+        ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
+    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK"; then
+        ip6tables -t mangle -A APP_CHAIN6 -m mark --mark "$ROUTING_MARK" -j ACCEPT
+    fi
+    # 处理黑白名单
+    if [ "${APP_PROXY_ENABLE:-0}" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+        # 根据模式填充
+        case "$APP_PROXY_MODE" in
+            blacklist)
+                if [ -n "$BYPASS_APPS_LIST" ]; then
+                    uids=$(find_packages_uid "$BYPASS_APPS_LIST" || true)
+                    for uid in $uids; do
+                        [ -n "$uid" ] && ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$uid" -j ACCEPT
+                    done
+                fi
+                ip6tables -t nat -A APP_CHAIN6 -j RETURN
+                ;;
+            whitelist)
+                if [ -n "$PROXY_APPS_LIST" ]; then
+                    uids=$(find_packages_uid "$PROXY_APPS_LIST" || true)
+                    for uid in $uids; do
+                        [ -n "$uid" ] && ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$uid" -j RETURN
+                    done
+                fi
+                ip6tables -t nat -A APP_CHAIN -j ACCEPT
+                ;;
+        esac
+    fi
+
+    # DNS 劫持
+    case "${DNS_HIJACK_ENABLE:-1}" in
+        1|2)
+            # 使用REDIRECT方式处理DNS
+            ip6tables -t nat -A DNS_HIJACK_PRE6 -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            ip6tables -t nat -A DNS_HIJACK_PRE6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            ip6tables -t nat -A DNS_HIJACK_OUT6 -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            ip6tables -t nat -A DNS_HIJACK_OUT6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            ;;
+    esac
+
+    # 处理透明代理
+    ip6tables -t nat -A PROXY_PREROUTING6 -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+    ip6tables -t nat -A PROXY_OUTPUT6 -j REDIRECT --to-ports "$PROXY_TCP_PORT"
 }
 
 setup_routing4() {
@@ -593,40 +818,106 @@ cleanup_tproxy_chain6() {
     fi
 }
 
+cleanup_redirect_chain4() {
+    iptables -t nat -D PROXY_PREROUTING -j BYPASS_IP
+    iptables -t nat -D PROXY_PREROUTING -j PROXY_INTERFACE
+    iptables -t nat -D PROXY_PREROUTING -j DNS_HIJACK_PRE
+
+    iptables -t nat -D PROXY_OUTPUT -j BYPASS_IP
+    iptables -t nat -D PROXY_OUTPUT -j BYPASS_INTERFACE
+    iptables -t nat -D PROXY_OUTPUT -j APP_CHAIN
+    iptables -t nat -D PROXY_OUTPUT -j DNS_HIJACK_OUT
+
+    iptables -t nat -D PREROUTING -p tcp -j PROXY_PREROUTING
+    iptables -t nat -D OUTPUT -p tcp -j PROXY_OUTPUT
+
+    for c in PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN; do
+        iptables -t nat -F "$c"
+        iptables -t nat -X "$c"
+    done
+}
+
+cleanup_redirect_chain6() {
+    ip6tables -t nat -D PROXY_PREROUTING6 -j BYPASS_IP6
+    ip6tables -t nat -D PROXY_PREROUTING6 -j PROXY_INTERFACE6
+    ip6tables -t nat -D PROXY_PREROUTING6 -j DNS_HIJACK_PRE6
+
+    ip6tables -t nat -D PROXY_OUTPUT6 -j BYPASS_IP6
+    ip6tables -t nat -D PROXY_OUTPUT6 -j BYPASS_INTERFACE6
+    ip6tables -t nat -D PROXY_OUTPUT6 -j APP_CHAIN6
+    ip6tables -t nat -D PROXY_OUTPUT6 -j DNS_HIJACK_OUT6
+
+    ip6tables -t nat -D PREROUTING -p tcp -j PROXY_PREROUTING6
+    ip6tables -t nat -D OUTPUT -p tcp -j PROXY_OUTPUT6
+
+    for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6; do
+        ip6tables -t nat -F "$c6"
+        ip6tables -t nat -X "$c6"
+    done
+}
+
 # 主流程
 main() {
     cmd="${1:-}"
 
     case "$cmd" in
         start)
-            setup_tproxy_chain4
-            setup_routing4
-            if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
-                setup_tproxy_chain6
-                setup_routing6
+            if check_tproxy_support; then
+                setup_tproxy_chain4
+                setup_routing4
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    setup_tproxy_chain6
+                    setup_routing6
+                fi
+            else
+                setup_redirect_chain
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    setup_redirect_chain6
+                fi
             fi
             ;;
         stop)
-            cleanup_tproxy_chain4
-            cleanup_routing4
-            if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
-                cleanup_tproxy_chain6
-                cleanup_routing6
+            if check_tproxy_support; then
+                cleanup_tproxy_chain4
+                cleanup_routing4
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    cleanup_tproxy_chain6
+                    cleanup_routing6
+                fi
+            else
+                cleanup_redirect_chain
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    cleanup_redirect_chain6
+                fi
             fi
             ;;
         restart)
-            cleanup_tproxy_chain4
-            cleanup_routing4
-            if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
-                cleanup_tproxy_chain6
-                cleanup_routing6
+            if check_tproxy_support; then
+                cleanup_tproxy_chain4
+                cleanup_routing4
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    cleanup_tproxy_chain6
+                    cleanup_routing6
+                fi
+            else
+                cleanup_redirect_chain
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    cleanup_redirect_chain6
+                fi
             fi
             sleep 2s
-            setup_tproxy_chain4
-            setup_routing4
-            if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
-                setup_tproxy_chain6
-                setup_routing6
+            if check_tproxy_support; then
+                setup_tproxy_chain4
+                setup_routing4
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    setup_tproxy_chain6
+                    setup_routing6
+                fi
+            else
+                setup_redirect_chain
+                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                    setup_redirect_chain6
+                fi
             fi
             ;;
         *)
