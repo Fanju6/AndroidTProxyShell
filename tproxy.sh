@@ -11,6 +11,9 @@ ROUTING_MARK=""
 PROXY_TCP_PORT="1536"
 PROXY_UDP_PORT="1536"
 
+# Proxy mode: 0=auto (check TPROXY support), 1=force TPROXY, 2=force REDIRECT
+PROXY_MODE=0
+
 # DNS configuration
 # DNS hijack method (0: disabled, 1: tproxy, 2: redirect)
 DNS_HIJACK_ENABLE=1
@@ -116,6 +119,10 @@ load_config() {
     PROXY_UDP_PORT="${PROXY_UDP_PORT:-1536}"
     log Info "PROXY_UDP_PORT: $PROXY_UDP_PORT"
 
+    # Proxy mode: 0=auto, 1=force TPROXY, 2=force REDIRECT
+    PROXY_MODE="${PROXY_MODE:-0}"
+    log Info "PROXY_MODE: $PROXY_MODE"
+
     # DNS configuration
     DNS_HIJACK_ENABLE="${DNS_HIJACK_ENABLE:-1}"
     log Info "DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
@@ -215,32 +222,37 @@ load_config() {
 validate_config() {
     log Debug "Validating configuration..."
 
-    if ! echo "$PROXY_TCP_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$PROXY_TCP_PORT" -lt 1 ] || [ "$PROXY_TCP_PORT" -gt 65535 ]; then
+    if ! echo "$PROXY_TCP_PORT" | grep -E '^[0-9]+$' > /dev/null || [ "$PROXY_TCP_PORT" -lt 1 ] || [ "$PROXY_TCP_PORT" -gt 65535 ]; then
         log Error "Invalid PROXY_TCP_PORT: $PROXY_TCP_PORT"
         return 1
     fi
 
-    if ! echo "$PROXY_UDP_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$PROXY_UDP_PORT" -lt 1 ] || [ "$PROXY_UDP_PORT" -gt 65535 ]; then
+    if ! echo "$PROXY_UDP_PORT" | grep -E '^[0-9]+$' > /dev/null || [ "$PROXY_UDP_PORT" -lt 1 ] || [ "$PROXY_UDP_PORT" -gt 65535 ]; then
         log Error "Invalid PROXY_UDP_PORT: $PROXY_UDP_PORT"
         return 1
     fi
 
-    if ! echo "$DNS_PORT" | grep -E '^[0-9]+$' >/dev/null || [ "$DNS_PORT" -lt 1 ] || [ "$DNS_PORT" -gt 65535 ]; then
+    if ! echo "$PROXY_MODE" | grep -E '^[0-2]$' > /dev/null; then
+        log Error "Invalid PROXY_MODE: $PROXY_MODE (must be 0=auto, 1=force TPROXY, 2=force REDIRECT)"
+        return 1
+    fi
+
+    if ! echo "$DNS_PORT" | grep -E '^[0-9]+$' > /dev/null || [ "$DNS_PORT" -lt 1 ] || [ "$DNS_PORT" -gt 65535 ]; then
         log Error "Invalid DNS_PORT: $DNS_PORT"
         return 1
     fi
 
-    if ! echo "$MARK_VALUE" | grep -E '^[0-9]+$' >/dev/null || [ "$MARK_VALUE" -lt 1 ] || [ "$MARK_VALUE" -gt 2147483647 ]; then
+    if ! echo "$MARK_VALUE" | grep -E '^[0-9]+$' > /dev/null || [ "$MARK_VALUE" -lt 1 ] || [ "$MARK_VALUE" -gt 2147483647 ]; then
         log Error "Invalid MARK_VALUE: $MARK_VALUE"
         return 1
     fi
 
-    if ! echo "$MARK_VALUE6" | grep -E '^[0-9]+$' >/dev/null || [ "$MARK_VALUE6" -lt 1 ] || [ "$MARK_VALUE6" -gt 2147483647 ]; then
+    if ! echo "$MARK_VALUE6" | grep -E '^[0-9]+$' > /dev/null || [ "$MARK_VALUE6" -lt 1 ] || [ "$MARK_VALUE6" -gt 2147483647 ]; then
         log Error "Invalid MARK_VALUE6: $MARK_VALUE6"
         return 1
     fi
 
-    if ! echo "$TABLE_ID" | grep -E '^[0-9]+$' >/dev/null || [ "$TABLE_ID" -lt 1 ] || [ "$TABLE_ID" -gt 65535 ]; then
+    if ! echo "$TABLE_ID" | grep -E '^[0-9]+$' > /dev/null || [ "$TABLE_ID" -lt 1 ] || [ "$TABLE_ID" -gt 65535 ]; then
         log Error "Invalid TABLE_ID: $TABLE_ID"
         return 1
     fi
@@ -341,7 +353,7 @@ check_tproxy_support() {
         log Debug "Kernel TPROXY support confirmed"
         return 0
     else
-        log Warn "Kernel TPROXY support not available"
+        log Debug "Kernel TPROXY support not available"
         return 1
     fi
 }
@@ -597,7 +609,7 @@ setup_cn_ipset() {
 
     if [ -f "$CN_IP_FILE" ]; then
         log Debug "Loading IPv4 CIDR from $CN_IP_FILE"
-        ipv4_count=$(wc -l < "$CN_IP_FILE" 2>/dev/null || echo "0")
+        ipv4_count=$(wc -l < "$CN_IP_FILE" 2> /dev/null || echo "0")
 
         if [ "$DRY_RUN" -eq 1 ]; then
             log Debug "[DRY-RUN] Would load $ipv4_count IPv4 CIDR entries via ipset restore"
@@ -606,7 +618,7 @@ setup_cn_ipset() {
             temp_file=$(mktemp)
             {
                 echo "create cnip hash:net family inet hashsize 8192 maxelem 65536"
-                awk 'NF > 0 {printf "add cnip %s\n", $0}' "$CN_IP_FILE"
+                awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip %s\n", $0}' "$CN_IP_FILE"
             } > "$temp_file"
 
             if ipset restore -f "$temp_file" 2> /dev/null; then
@@ -628,7 +640,7 @@ setup_cn_ipset() {
     if [ "$PROXY_IPV6" -eq 1 ]; then
         if [ -f "$CN_IPV6_FILE" ]; then
             log Debug "Loading IPv6 CIDR from $CN_IPV6_FILE"
-            ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2>/dev/null || echo "0")
+            ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2> /dev/null || echo "0")
 
             if [ "$DRY_RUN" -eq 1 ]; then
                 log Debug "[DRY-RUN] Would load $ipv6_count IPv6 CIDR entries via ipset restore"
@@ -637,7 +649,7 @@ setup_cn_ipset() {
                 temp_file6=$(mktemp)
                 {
                     echo "create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
-                    awk 'NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
+                    awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
                 } > "$temp_file6"
 
                 if ipset restore -f "$temp_file6" 2> /dev/null; then
@@ -839,8 +851,9 @@ setup_tproxy_chain4() {
             iptables -t nat -A NAT_DNS_HIJACK -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
             iptables -t nat -A NAT_DNS_HIJACK -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 
-            [ "${PROXY_MOBILE:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
-            [ "${PROXY_WIFI:-1}" -eq 1 ] && iptables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
+            [ "$PROXY_MOBILE" -eq 1 ] && iptables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK
+            [ "$PROXY_WIFI" -eq 1 ] && iptables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK
+            [ "$PROXY_USB" -eq 1 ] && iptables -t nat -A PREROUTING -i "$USB_INTERFACE" -j NAT_DNS_HIJACK
 
             iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
             iptables -t nat -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
@@ -1041,12 +1054,12 @@ setup_tproxy_chain6() {
     if [ "$PROXY_TCP" -eq 1 ]; then
         ip6tables -t mangle -I PREROUTING -p tcp -j PROXY_PREROUTING6
         ip6tables -t mangle -I OUTPUT -p tcp -j PROXY_OUTPUT6
-        log Info "Added IPv6 TCP rules to PREROUTING and OUTPUT chains"
+        log Info "Added TCP rules to IPv6 PREROUTING and OUTPUT chains"
     fi
     if [ "$PROXY_UDP" -eq 1 ]; then
         ip6tables -t mangle -I PREROUTING -p udp -j PROXY_PREROUTING6
         ip6tables -t mangle -I OUTPUT -p udp -j PROXY_OUTPUT6
-        log Info "Added IPv6 UDP rules to PREROUTING and OUTPUT chains"
+        log Info "Added UDP rules to IPv6 PREROUTING and OUTPUT chains"
     fi
 
     ip6tables -t mangle -A PROXY_PREROUTING6 -j BYPASS_IP6
@@ -1061,7 +1074,7 @@ setup_tproxy_chain6() {
 
     if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
         ip6tables -t mangle -A BYPASS_IP6 -m addrtype --dst-type LOCAL -j ACCEPT
-        log Info "Added IPv6 local address type bypass"
+        log Info "Added local address type bypass for IPv6"
     fi
     for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
         100::/64 64:ff9b::/96 2001::/32 2001:10::/28 \
@@ -1070,7 +1083,7 @@ setup_tproxy_chain6() {
         ip6tables -t mangle -A BYPASS_IP6 -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
         ip6tables -t mangle -A BYPASS_IP6 -d "$subnet6" ! -p udp -j ACCEPT
     done
-    log Info "Added bypass rules for IPv6 private IP ranges"
+    log Info "Added bypass rules for IPv6 private ranges"
 
     if [ "$BYPASS_CN_IP" -eq 1 ]; then
         if command -v ipset > /dev/null 2>&1 && ipset list cnip6 > /dev/null 2>&1; then
@@ -1084,52 +1097,55 @@ setup_tproxy_chain6() {
     ip6tables -t mangle -A PROXY_INTERFACE6 -i lo -j RETURN
     if [ "$PROXY_MOBILE" -eq 1 ]; then
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j RETURN
-        log Info "IPv6 Mobile interface $MOBILE_INTERFACE will be proxied"
+        log Info "Mobile interface $MOBILE_INTERFACE will be proxied for IPv6"
     else
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j ACCEPT
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$MOBILE_INTERFACE" -j ACCEPT
-        log Info "IPv6 Mobile interface $MOBILE_INTERFACE will bypass proxy"
+        log Info "Mobile interface $MOBILE_INTERFACE will bypass proxy for IPv6"
     fi
     if [ "$PROXY_WIFI" -eq 1 ]; then
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j RETURN
-        log Info "IPv6 WiFi interface $WIFI_INTERFACE will be proxied"
+        log Info "WiFi interface $WIFI_INTERFACE will be proxied for IPv6"
     else
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j ACCEPT
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$WIFI_INTERFACE" -j ACCEPT
-        log Info "IPv6 WiFi interface $WIFI_INTERFACE will bypass proxy"
+        log Info "WiFi interface $WIFI_INTERFACE will bypass proxy for IPv6"
     fi
     if [ "$PROXY_HOTSPOT" -eq 1 ]; then
-        if [ "$HOTSPOT_INTERFACE" != "$WIFI_INTERFACE" ]; then
+        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
+            ip6tables -t mangle -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" ! -s fe80::/10 -j RETURN
+            log Info "Hotspot interface $WIFI_INTERFACE will be proxied for IPv6"
+        else
             ip6tables -t mangle -A PROXY_INTERFACE6 -i "$HOTSPOT_INTERFACE" -j RETURN
-            log Info "IPv6 Hotspot interface $HOTSPOT_INTERFACE will be proxied"
+            log Info "Hotspot interface $HOTSPOT_INTERFACE will be proxied for IPv6"
         fi
     else
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$HOTSPOT_INTERFACE" -j ACCEPT
-        log Info "IPv6 Hotspot interface $HOTSPOT_INTERFACE will bypass proxy"
+        log Info "Hotspot interface $HOTSPOT_INTERFACE will bypass proxy for IPv6"
     fi
     if [ "$PROXY_USB" -eq 1 ]; then
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j RETURN
-        log Info "IPv6 USB interface $USB_INTERFACE will be proxied"
+        log Info "USB interface $USB_INTERFACE will be proxied for IPv6"
     else
         ip6tables -t mangle -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j ACCEPT
         ip6tables -t mangle -A BYPASS_INTERFACE6 -o "$USB_INTERFACE" -j ACCEPT
-        log Info "IPv6 USB interface $USB_INTERFACE will bypass proxy"
+        log Info "USB interface $USB_INTERFACE will bypass proxy for IPv6"
     fi
     ip6tables -t mangle -A PROXY_INTERFACE6 -j ACCEPT
 
     if [ "$MAC_FILTER_ENABLE" -eq 1 ] && [ "$PROXY_HOTSPOT" -eq 1 ] && [ -n "$HOTSPOT_INTERFACE" ]; then
-        log Info "Setting up IPv6 MAC address filter rules for interface $HOTSPOT_INTERFACE"
+        log Info "Setting up MAC address filter rules for interface $HOTSPOT_INTERFACE (IPv6)"
         case "$MAC_PROXY_MODE" in
             blacklist)
                 if [ -n "$BYPASS_MACS_LIST" ]; then
                     for mac in $BYPASS_MACS_LIST; do
                         if [ -n "$mac" ]; then
                             ip6tables -t mangle -A MAC_CHAIN6 -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j ACCEPT
-                            log Info "Added IPv6 MAC bypass rule for $mac"
+                            log Info "Added MAC bypass rule for $mac (IPv6)"
                         fi
                     done
                 else
-                    log Warn "IPv6 MAC blacklist mode enabled but no bypass MACs configured"
+                    log Warn "MAC blacklist mode enabled but no bypass MACs configured (IPv6)"
                 fi
                 ip6tables -t mangle -A MAC_CHAIN6 -i "$HOTSPOT_INTERFACE" -j RETURN
                 ;;
@@ -1138,11 +1154,11 @@ setup_tproxy_chain6() {
                     for mac in $PROXY_MACS_LIST; do
                         if [ -n "$mac" ]; then
                             ip6tables -t mangle -A MAC_CHAIN6 -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j RETURN
-                            log Info "Added IPv6 MAC proxy rule for $mac"
+                            log Info "Added MAC proxy rule for $mac (IPv6)"
                         fi
                     done
                 else
-                    log Warn "IPv6 MAC whitelist mode enabled but no proxy MACs configured"
+                    log Warn "MAC whitelist mode enabled but no proxy MACs configured (IPv6)"
                 fi
                 ip6tables -t mangle -A MAC_CHAIN6 -i "$HOTSPOT_INTERFACE" -j ACCEPT
                 ;;
@@ -1151,16 +1167,16 @@ setup_tproxy_chain6() {
 
     if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
         ip6tables -t mangle -A APP_CHAIN6 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
-        log Info "Added IPv6 bypass for core user $CORE_USER:$CORE_GROUP"
+        log Info "Added bypass for core user $CORE_USER:$CORE_GROUP (IPv6)"
     elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
         ip6tables -t mangle -A APP_CHAIN6 -m mark --mark "$ROUTING_MARK" -j ACCEPT
-        log Info "Added IPv6 bypass for marked traffic with core mark $ROUTING_MARK"
+        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (IPv6)"
     else
-        log Warn "IPv6 core traffic bypass not configured, may cause traffic loop"
+        log Warn "Core traffic bypass not configured, may cause traffic loop (IPv6)"
     fi
 
     if [ "$APP_PROXY_ENABLE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
-        log Info "Setting up IPv6 application filter rules in $APP_PROXY_MODE mode"
+        log Info "Setting up application filter rules in $APP_PROXY_MODE mode (IPv6)"
         case "$APP_PROXY_MODE" in
             blacklist)
                 if [ -n "$BYPASS_APPS_LIST" ]; then
@@ -1168,11 +1184,11 @@ setup_tproxy_chain6() {
                     for uid in $uids; do
                         if [ -n "$uid" ]; then
                             ip6tables -t mangle -A APP_CHAIN6 -m owner --uid-owner "$uid" -j ACCEPT
-                            log Info "Added IPv6 bypass for UID $uid"
+                            log Info "Added bypass for UID $uid (IPv6)"
                         fi
                     done
                 else
-                    log Warn "IPv6 App blacklist mode enabled but no bypass apps configured"
+                    log Warn "App blacklist mode enabled but no bypass apps configured (IPv6)"
                 fi
                 ip6tables -t mangle -A APP_CHAIN6 -j RETURN
                 ;;
@@ -1182,11 +1198,11 @@ setup_tproxy_chain6() {
                     for uid in $uids; do
                         if [ -n "$uid" ]; then
                             ip6tables -t mangle -A APP_CHAIN6 -m owner --uid-owner "$uid" -j RETURN
-                            log Info "Added IPv6 proxy for UID $uid"
+                            log Info "Added proxy for UID $uid (IPv6)"
                         fi
                     done
                 else
-                    log Warn "IPv6 App whitelist mode enabled but no proxy apps configured"
+                    log Warn "App whitelist mode enabled but no proxy apps configured (IPv6)"
                 fi
                 ip6tables -t mangle -A APP_CHAIN6 -j ACCEPT
                 ;;
@@ -1195,13 +1211,13 @@ setup_tproxy_chain6() {
 
     case "$DNS_HIJACK_ENABLE" in
         1)
-            # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE)
+            # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE6)
             ip6tables -t mangle -A DNS_HIJACK_PRE6 -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$MARK_VALUE6"
             ip6tables -t mangle -A DNS_HIJACK_PRE6 -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$MARK_VALUE6"
-            # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT)
+            # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT6)
             ip6tables -t mangle -A DNS_HIJACK_OUT6 -p tcp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
             ip6tables -t mangle -A DNS_HIJACK_OUT6 -p udp --dport 53 -j MARK --set-mark "$MARK_VALUE6"
-            log Info "IPv6 DNS hijack enabled using TPROXY mode"
+            log Info "DNS hijack enabled using TPROXY mode (IPv6)"
             ;;
         2)
             # Handle DNS using REDIRECT method in nat table
@@ -1210,13 +1226,14 @@ setup_tproxy_chain6() {
                 ip6tables -t nat -A NAT_DNS_HIJACK6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
                 ip6tables -t nat -A NAT_DNS_HIJACK6 -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
 
-                [ "${PROXY_MOBILE:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
-                [ "${PROXY_WIFI:-1}" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6
+                [ "$PROXY_MOBILE" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6
+                [ "$PROXY_WIFI" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6
+                [ "$PROXY_USB" -eq 1 ] && ip6tables -t nat -A PREROUTING -i "$USB_INTERFACE" -j NAT_DNS_HIJACK6
 
                 ip6tables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
                 ip6tables -t nat -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN
                 ip6tables -t nat -A OUTPUT -j NAT_DNS_HIJACK6
-                log Info "IPv6 DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
+                log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT (IPv6)"
             else
                 log Warn "IPv6 NAT REDIRECT not supported, skipping DNS hijack"
             fi
@@ -1231,12 +1248,12 @@ setup_tproxy_chain6() {
 }
 
 setup_redirect_chain6() {
-    log Info "Setting up REDIRECT chains for IPv6"
-
     if ! check_kernel_feature "IP6_NF_NAT" || ! check_kernel_feature "IP6_NF_TARGET_REDIRECT"; then
         log Warn "IPv6: Kernel does not support IPv6 NAT or REDIRECT, skipping IPv6 proxy setup"
         return 0
     fi
+
+    log Info "Setting up REDIRECT chains for IPv6"
 
     for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6; do
         safe_chain_create6 nat "$c6"
@@ -1245,7 +1262,7 @@ setup_redirect_chain6() {
     # Only TCP
     ip6tables -t nat -I PREROUTING -p tcp -j PROXY_PREROUTING6
     ip6tables -t nat -I OUTPUT -p tcp -j PROXY_OUTPUT6
-    log Info "Added IPv6 TCP rules to PREROUTING and OUTPUT chains (REDIRECT mode)"
+    log Info "Added TCP rules to IPv6 PREROUTING and OUTPUT chains (REDIRECT mode)"
 
     ip6tables -t nat -A PROXY_PREROUTING6 -j BYPASS_IP6
     ip6tables -t nat -A PROXY_PREROUTING6 -j PROXY_INTERFACE6
@@ -1259,7 +1276,7 @@ setup_redirect_chain6() {
 
     if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
         ip6tables -t nat -A BYPASS_IP6 -m addrtype --dst-type LOCAL -j ACCEPT
-        log Info "Added IPv6 local address type bypass (REDIRECT mode)"
+        log Info "Added local address type bypass for IPv6 (REDIRECT mode)"
     fi
     for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
         100::/64 64:ff9b::/96 2001::/32 2001:10::/28 \
@@ -1268,7 +1285,7 @@ setup_redirect_chain6() {
         ip6tables -t nat -A BYPASS_IP6 -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
         ip6tables -t nat -A BYPASS_IP6 -d "$subnet6" ! -p udp -j ACCEPT
     done
-    log Info "Added bypass rules for IPv6 private IP ranges (REDIRECT mode)"
+    log Info "Added bypass rules for IPv6 private ranges (REDIRECT mode)"
 
     if [ "$BYPASS_CN_IP" -eq 1 ]; then
         if command -v ipset > /dev/null 2>&1 && ipset list cnip6 > /dev/null 2>&1; then
@@ -1282,52 +1299,55 @@ setup_redirect_chain6() {
     ip6tables -t nat -A PROXY_INTERFACE6 -i lo -j RETURN
     if [ "$PROXY_MOBILE" -eq 1 ]; then
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j RETURN
-        log Info "IPv6 Mobile interface $MOBILE_INTERFACE will be proxied (REDIRECT mode)"
+        log Info "Mobile interface $MOBILE_INTERFACE will be proxied for IPv6 (REDIRECT mode)"
     else
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$MOBILE_INTERFACE" -j ACCEPT
         ip6tables -t nat -A BYPASS_INTERFACE6 -o "$MOBILE_INTERFACE" -j ACCEPT
-        log Info "IPv6 Mobile interface $MOBILE_INTERFACE will bypass proxy (REDIRECT mode)"
+        log Info "Mobile interface $MOBILE_INTERFACE will bypass proxy for IPv6 (REDIRECT mode)"
     fi
     if [ "$PROXY_WIFI" -eq 1 ]; then
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j RETURN
-        log Info "IPv6 WiFi interface $WIFI_INTERFACE will be proxied (REDIRECT mode)"
+        log Info "WiFi interface $WIFI_INTERFACE will be proxied for IPv6 (REDIRECT mode)"
     else
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" -j ACCEPT
         ip6tables -t nat -A BYPASS_INTERFACE6 -o "$WIFI_INTERFACE" -j ACCEPT
-        log Info "IPv6 WiFi interface $WIFI_INTERFACE will bypass proxy (REDIRECT mode)"
+        log Info "WiFi interface $WIFI_INTERFACE will bypass proxy for IPv6 (REDIRECT mode)"
     fi
     if [ "$PROXY_HOTSPOT" -eq 1 ]; then
-        if [ "$HOTSPOT_INTERFACE" != "$WIFI_INTERFACE" ]; then
+        if [ "$HOTSPOT_INTERFACE" = "$WIFI_INTERFACE" ]; then
+            ip6tables -t nat -A PROXY_INTERFACE6 -i "$WIFI_INTERFACE" ! -s fe80::/10 -j RETURN
+            log Info "Hotspot interface $WIFI_INTERFACE will be proxied for IPv6 (REDIRECT mode)"
+        else
             ip6tables -t nat -A PROXY_INTERFACE6 -i "$HOTSPOT_INTERFACE" -j RETURN
-            log Info "IPv6 Hotspot interface $HOTSPOT_INTERFACE will be proxied (REDIRECT mode)"
+            log Info "Hotspot interface $HOTSPOT_INTERFACE will be proxied for IPv6 (REDIRECT mode)"
         fi
     else
         ip6tables -t nat -A BYPASS_INTERFACE6 -o "$HOTSPOT_INTERFACE" -j ACCEPT
-        log Info "IPv6 Hotspot interface $HOTSPOT_INTERFACE will bypass proxy (REDIRECT mode)"
+        log Info "Hotspot interface $HOTSPOT_INTERFACE will bypass proxy for IPv6 (REDIRECT mode)"
     fi
     if [ "$PROXY_USB" -eq 1 ]; then
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j RETURN
-        log Info "IPv6 USB interface $USB_INTERFACE will be proxied (REDIRECT mode)"
+        log Info "USB interface $USB_INTERFACE will be proxied for IPv6 (REDIRECT mode)"
     else
         ip6tables -t nat -A PROXY_INTERFACE6 -i "$USB_INTERFACE" -j ACCEPT
         ip6tables -t nat -A BYPASS_INTERFACE6 -o "$USB_INTERFACE" -j ACCEPT
-        log Info "IPv6 USB interface $USB_INTERFACE will bypass proxy (REDIRECT mode)"
+        log Info "USB interface $USB_INTERFACE will bypass proxy for IPv6 (REDIRECT mode)"
     fi
     ip6tables -t nat -A PROXY_INTERFACE6 -j ACCEPT
 
     if [ "$MAC_FILTER_ENABLE" -eq 1 ] && [ "$PROXY_HOTSPOT" -eq 1 ] && [ -n "$HOTSPOT_INTERFACE" ]; then
-        log Info "Setting up IPv6 MAC address filter rules for interface $HOTSPOT_INTERFACE (REDIRECT mode)"
+        log Info "Setting up MAC address filter rules for interface $HOTSPOT_INTERFACE (IPv6, REDIRECT mode)"
         case "$MAC_PROXY_MODE" in
             blacklist)
                 if [ -n "$BYPASS_MACS_LIST" ]; then
                     for mac in $BYPASS_MACS_LIST; do
                         if [ -n "$mac" ]; then
                             ip6tables -t nat -A MAC_CHAIN6 -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j ACCEPT
-                            log Info "Added IPv6 MAC bypass rule for $mac (REDIRECT mode)"
+                            log Info "Added MAC bypass rule for $mac (IPv6, REDIRECT mode)"
                         fi
                     done
                 else
-                    log Warn "IPv6 MAC blacklist mode enabled but no bypass MACs configured (REDIRECT mode)"
+                    log Warn "MAC blacklist mode enabled but no bypass MACs configured (IPv6, REDIRECT mode)"
                 fi
                 ip6tables -t nat -A MAC_CHAIN6 -i "$HOTSPOT_INTERFACE" -j RETURN
                 ;;
@@ -1336,11 +1356,11 @@ setup_redirect_chain6() {
                     for mac in $PROXY_MACS_LIST; do
                         if [ -n "$mac" ]; then
                             ip6tables -t nat -A MAC_CHAIN6 -m mac --mac-source "$mac" -i "$HOTSPOT_INTERFACE" -j RETURN
-                            log Info "Added IPv6 MAC proxy rule for $mac (REDIRECT mode)"
+                            log Info "Added MAC proxy rule for $mac (IPv6, REDIRECT mode)"
                         fi
                     done
                 else
-                    log Warn "IPv6 MAC whitelist mode enabled but no proxy MACs configured (REDIRECT mode)"
+                    log Warn "MAC whitelist mode enabled but no proxy MACs configured (IPv6, REDIRECT mode)"
                 fi
                 ip6tables -t nat -A MAC_CHAIN6 -i "$HOTSPOT_INTERFACE" -j ACCEPT
                 ;;
@@ -1349,16 +1369,16 @@ setup_redirect_chain6() {
 
     if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
         ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
-        log Info "Added IPv6 bypass for core user $CORE_USER:$CORE_GROUP (REDIRECT mode)"
+        log Info "Added bypass for core user $CORE_USER:$CORE_GROUP (IPv6, REDIRECT mode)"
     elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
         ip6tables -t nat -A APP_CHAIN6 -m mark --mark "$ROUTING_MARK" -j ACCEPT
-        log Info "Added IPv6 bypass for marked traffic with core mark $ROUTING_MARK (REDIRECT mode)"
+        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (IPv6, REDIRECT mode)"
     else
-        log Warn "IPv6 core traffic bypass not configured, may cause traffic loop (REDIRECT mode)"
+        log Warn "Core traffic bypass not configured, may cause traffic loop (IPv6, REDIRECT mode)"
     fi
 
     if [ "$APP_PROXY_ENABLE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
-        log Info "Setting up IPv6 application filter rules in $APP_PROXY_MODE mode (REDIRECT mode)"
+        log Info "Setting up application filter rules in $APP_PROXY_MODE mode (IPv6, REDIRECT mode)"
         case "$APP_PROXY_MODE" in
             blacklist)
                 if [ -n "$BYPASS_APPS_LIST" ]; then
@@ -1366,11 +1386,11 @@ setup_redirect_chain6() {
                     for uid in $uids; do
                         if [ -n "$uid" ]; then
                             ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$uid" -j ACCEPT
-                            log Info "Added IPv6 bypass for UID $uid (REDIRECT mode)"
+                            log Info "Added bypass for UID $uid (IPv6, REDIRECT mode)"
                         fi
                     done
                 else
-                    log Warn "IPv6 App blacklist mode enabled but no bypass apps configured (REDIRECT mode)"
+                    log Warn "App blacklist mode enabled but no bypass apps configured (IPv6, REDIRECT mode)"
                 fi
                 ip6tables -t nat -A APP_CHAIN6 -j RETURN
                 ;;
@@ -1380,11 +1400,11 @@ setup_redirect_chain6() {
                     for uid in $uids; do
                         if [ -n "$uid" ]; then
                             ip6tables -t nat -A APP_CHAIN6 -m owner --uid-owner "$uid" -j RETURN
-                            log Info "Added IPv6 proxy for UID $uid (REDIRECT mode)"
+                            log Info "Added proxy for UID $uid (IPv6, REDIRECT mode)"
                         fi
                     done
                 else
-                    log Warn "IPv6 App whitelist mode enabled but no proxy apps configured (REDIRECT mode)"
+                    log Warn "App whitelist mode enabled but no proxy apps configured (IPv6, REDIRECT mode)"
                 fi
                 ip6tables -t nat -A APP_CHAIN6 -j ACCEPT
                 ;;
@@ -1398,7 +1418,7 @@ setup_redirect_chain6() {
             ip6tables -t nat -A DNS_HIJACK_PRE6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
             ip6tables -t nat -A DNS_HIJACK_OUT6 -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
             ip6tables -t nat -A DNS_HIJACK_OUT6 -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            log Info "IPv6 DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
+            log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT (IPv6)"
             ;;
     esac
 
@@ -1408,25 +1428,25 @@ setup_redirect_chain6() {
 }
 
 setup_routing4() {
+    log Info "Setting up routing rules for IPv4"
+
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "[DRY-RUN] Would setup IPv4 routing"
-        return 0
-    fi
+        log Debug "[DRY-RUN] ip rule add fwmark $MARK_VALUE lookup $TABLE_ID"
+        log Debug "[DRY-RUN] ip route add local 0.0.0.0/0 dev lo table $TABLE_ID"
+    else
+        ip_rule del fwmark "$MARK_VALUE" lookup "$TABLE_ID" 2> /dev/null || true
+        ip_route del local 0.0.0.0/0 dev lo table "$TABLE_ID" 2> /dev/null || true
 
-    log Info "Setting up IPv4 routing..."
+        if ! ip_rule add fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"; then
+            log Error "Failed to add IPv4 routing rule"
+            return 1
+        fi
 
-    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-    ip_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
-
-    if ! ip_rule add fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID"; then
-        log Error "Failed to add IPv4 routing rule"
-        return 1
-    fi
-
-    if ! ip_route add local default dev lo table "$TABLE_ID"; then
-        log Error "Failed to add IPv4 route"
-        ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-        return 1
+        if ! ip_route add local 0.0.0.0/0 dev lo table "$TABLE_ID"; then
+            log Error "Failed to add IPv4 route"
+            ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+            return 1
+        fi
     fi
 
     echo 1 > /proc/sys/net/ipv4/ip_forward
@@ -1434,55 +1454,28 @@ setup_routing4() {
 }
 
 setup_routing6() {
+    log Info "Setting up routing rules for IPv6"
+
     if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "[DRY-RUN] Would setup IPv6 routing"
-        return 0
-    fi
-
-    log Info "Setting up IPv6 routing..."
-
-    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-    ip6_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
-
-    if ! ip6_rule add fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"; then
-        log Error "Failed to add IPv6 routing rule"
-        return 1
-    fi
-
-    if ! ip6_route add local default dev lo table "$TABLE_ID"; then
-        log Error "Failed to add IPv6 route"
+        log Debug "[DRY-RUN] ip -6 rule add fwmark $MARK_VALUE6 lookup $TABLE_ID"
+        log Debug "[DRY-RUN] ip -6 route add local ::/0 dev lo table $TABLE_ID"
+    else
         ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-        return 1
-    fi
+        ip6_route del local ::/0 dev lo table "$TABLE_ID" 2> /dev/null || true
 
+        if ! ip6_rule add fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID"; then
+            log Error "Failed to add IPv6 routing rule"
+            return 1
+        fi
+
+        if ! ip6_route add local ::/0 dev lo table "$TABLE_ID"; then
+            log Error "Failed to add IPv6 route"
+            ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+            return 1
+        fi
+    fi
     echo 1 > /proc/sys/net/ipv6/ip_forward
     log Info "IPv6 routing setup completed"
-}
-
-cleanup_routing4() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "[DRY-RUN] Would cleanup IPv4 routing"
-        return 0
-    fi
-
-    log Info "Cleaning up IPv4 routing..."
-    ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-    ip_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
-    echo 0 > /proc/sys/net/ipv4/ip_forward
-    log Info "IPv4 routing cleanup completed"
-}
-
-cleanup_routing6() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        log Debug "[DRY-RUN] Would cleanup IPv6 routing"
-        return 0
-    fi
-
-    log Info "Cleaning up IPv6 routing..."
-    ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
-    ip6_route del local default dev lo table "$TABLE_ID" 2> /dev/null || true
-    echo 0 > /proc/sys/net/ipv6/ip_forward
-    log Info "IPv6 routing cleanup completed"
 }
 
 cleanup_tproxy_chain4() {
@@ -1498,29 +1491,24 @@ cleanup_tproxy_chain4() {
     iptables -t mangle -D PROXY_OUTPUT -j APP_CHAIN 2> /dev/null || true
     iptables -t mangle -D PROXY_OUTPUT -j DNS_HIJACK_OUT 2> /dev/null || true
 
-    if [ "$PROXY_TCP" -eq 1 ]; then
-        iptables -t mangle -D PREROUTING -p tcp -j PROXY_PREROUTING 2> /dev/null || true
-        iptables -t mangle -D OUTPUT -p tcp -j PROXY_OUTPUT 2> /dev/null || true
-    fi
-    if [ "$PROXY_UDP" -eq 1 ]; then
-        iptables -t mangle -D PREROUTING -p udp -j PROXY_PREROUTING 2> /dev/null || true
-        iptables -t mangle -D OUTPUT -p udp -j PROXY_OUTPUT 2> /dev/null || true
-    fi
+    iptables -t mangle -D PREROUTING -p tcp -j PROXY_PREROUTING 2> /dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp -j PROXY_OUTPUT 2> /dev/null || true
+    iptables -t mangle -D PREROUTING -p udp -j PROXY_PREROUTING 2> /dev/null || true
+    iptables -t mangle -D OUTPUT -p udp -j PROXY_OUTPUT 2> /dev/null || true
 
     for c in PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN; do
         iptables -t mangle -F "$c" 2> /dev/null || true
         iptables -t mangle -X "$c" 2> /dev/null || true
     done
 
-    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
-        iptables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
-        iptables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
-        iptables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
-        iptables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
-        iptables -t nat -D OUTPUT -j NAT_DNS_HIJACK 2> /dev/null || true
-        iptables -t nat -F NAT_DNS_HIJACK 2> /dev/null || true
-        iptables -t nat -X NAT_DNS_HIJACK 2> /dev/null || true
-    fi
+    iptables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
+    iptables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK 2> /dev/null || true
+    iptables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+    iptables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+    iptables -t nat -D OUTPUT -j NAT_DNS_HIJACK 2> /dev/null || true
+    iptables -t nat -F NAT_DNS_HIJACK 2> /dev/null || true
+    iptables -t nat -X NAT_DNS_HIJACK 2> /dev/null || true
+
     log Info "TPROXY chains for IPv4 cleanup completed"
 }
 
@@ -1537,29 +1525,24 @@ cleanup_tproxy_chain6() {
     ip6tables -t mangle -D PROXY_OUTPUT6 -j APP_CHAIN6 2> /dev/null || true
     ip6tables -t mangle -D PROXY_OUTPUT6 -j DNS_HIJACK_OUT6 2> /dev/null || true
 
-    if [ "$PROXY_TCP" -eq 1 ]; then
-        ip6tables -t mangle -D PREROUTING -p tcp -j PROXY_PREROUTING6 2> /dev/null || true
-        ip6tables -t mangle -D OUTPUT -p tcp -j PROXY_OUTPUT6 2> /dev/null || true
-    fi
-    if [ "$PROXY_UDP" -eq 1 ]; then
-        ip6tables -t mangle -D PREROUTING -p udp -j PROXY_PREROUTING6 2> /dev/null || true
-        ip6tables -t mangle -D OUTPUT -p udp -j PROXY_OUTPUT6 2> /dev/null || true
-    fi
+    ip6tables -t mangle -D PREROUTING -p tcp -j PROXY_PREROUTING6 2> /dev/null || true
+    ip6tables -t mangle -D OUTPUT -p tcp -j PROXY_OUTPUT6 2> /dev/null || true
+    ip6tables -t mangle -D PREROUTING -p udp -j PROXY_PREROUTING6 2> /dev/null || true
+    ip6tables -t mangle -D OUTPUT -p udp -j PROXY_OUTPUT6 2> /dev/null || true
 
     for c6 in PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6; do
         ip6tables -t mangle -F "$c6" 2> /dev/null || true
         ip6tables -t mangle -X "$c6" 2> /dev/null || true
     done
 
-    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
-        ip6tables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
-        ip6tables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
-        ip6tables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
-        ip6tables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
-        ip6tables -t nat -D OUTPUT -j NAT_DNS_HIJACK6 2> /dev/null || true
-        ip6tables -t nat -F NAT_DNS_HIJACK6 2> /dev/null || true
-        ip6tables -t nat -X NAT_DNS_HIJACK6 2> /dev/null || true
-    fi
+    ip6tables -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
+    ip6tables -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j NAT_DNS_HIJACK6 2> /dev/null || true
+    ip6tables -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+    ip6tables -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j RETURN 2> /dev/null || true
+    ip6tables -t nat -D OUTPUT -j NAT_DNS_HIJACK6 2> /dev/null || true
+    ip6tables -t nat -F NAT_DNS_HIJACK6 2> /dev/null || true
+    ip6tables -t nat -X NAT_DNS_HIJACK6 2> /dev/null || true
+
     log Info "TPROXY chains for IPv6 cleanup completed"
 }
 
@@ -1583,6 +1566,7 @@ cleanup_redirect_chain4() {
         iptables -t nat -F "$c" 2> /dev/null || true
         iptables -t nat -X "$c" 2> /dev/null || true
     done
+
     log Info "REDIRECT chains for IPv4 cleanup completed"
 }
 
@@ -1611,18 +1595,53 @@ cleanup_redirect_chain6() {
         ip6tables -t nat -F "$c6" 2> /dev/null || true
         ip6tables -t nat -X "$c6" 2> /dev/null || true
     done
+
     log Info "REDIRECT chains for IPv6 cleanup completed"
 }
 
+cleanup_routing4() {
+    log Info "Cleaning up IPv4 routing rules"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] ip rule del fwmark $MARK_VALUE table $TABLE_ID pref $TABLE_ID"
+        log Debug "[DRY-RUN] ip route del local 0.0.0.0/0 dev lo table $TABLE_ID"
+    else
+        ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+        ip_route del local 0.0.0.0/0 dev lo table "$TABLE_ID" 2> /dev/null || true
+    fi
+
+    echo 0 > /proc/sys/net/ipv4/ip_forward
+    log Info "IPv4 routing cleanup completed"
+}
+
+cleanup_routing6() {
+    log Info "Cleaning up IPv6 routing rules"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] ip -6 rule del fwmark $MARK_VALUE6 table $TABLE_ID pref $TABLE_ID"
+        log Debug "[DRY-RUN] ip -6 route del local ::/0 dev lo table $TABLE_ID"
+    else
+        ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
+        ip6_route del local ::/0 dev lo table "$TABLE_ID" 2> /dev/null || true
+    fi
+
+    echo 0 > /proc/sys/net/ipv6/ip_forward
+    log Info "IPv6 routing cleanup completed"
+}
+
 cleanup_ipset() {
-    if [ "$BYPASS_CN_IP" -eq 1 ]; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-            log Debug "[DRY-RUN] ipset destroy cnip"
-            log Debug "[DRY-RUN] ipset destroy cnip6"
-        else
-            ipset destroy cnip 2> /dev/null && log Debug "Destroyed ipset 'cnip'"
-            ipset destroy cnip6 2> /dev/null && log Debug "Destroyed ipset 'cnip6'"
-        fi
+    if [ "$BYPASS_CN_IP" -eq 0 ]; then
+        log Debug "CN IP bypass is disabled, skipping ipset cleanup"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] ipset destroy cnip"
+        log Debug "[DRY-RUN] ipset destroy cnip6"
+    else
+        ipset destroy cnip 2> /dev/null || true
+        ipset destroy cnip6 2> /dev/null || true
+        log Info "ipset 'cnip' and 'cnip6' destroyed"
     fi
 }
 
@@ -1633,6 +1652,30 @@ main() {
         log Error "Configuration validation failed"
         exit 1
     fi
+
+    use_tproxy=0
+    case "$PROXY_MODE" in
+        0)
+            if check_tproxy_support; then
+                use_tproxy=1
+                log Info "Kernel supports TPROXY, using TPROXY mode (auto)"
+            else
+                log Warn "Kernel does not support TPROXY, falling back to REDIRECT mode (auto)"
+            fi
+            ;;
+        1)
+            if check_tproxy_support; then
+                use_tproxy=1
+                log Info "Using TPROXY mode (forced by configuration)"
+            else
+                log Error "TPROXY mode forced but kernel does not support TPROXY"
+                exit 1
+            fi
+            ;;
+        2)
+            log Info "Using REDIRECT mode (forced by configuration)"
+            ;;
+    esac
 
     case "$cmd" in
         start)
@@ -1647,18 +1690,16 @@ main() {
                 fi
             fi
 
-            if check_tproxy_support; then
-                log Info "Kernel supports TPROXY, using TPROXY mode"
+            if [ "$use_tproxy" -eq 1 ]; then
                 setup_tproxy_chain4
                 setup_routing4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     setup_tproxy_chain6
                     setup_routing6
                 fi
             else
-                log Warn "Kernel does not support TPROXY, falling back to REDIRECT mode (TCP only)"
                 setup_redirect_chain4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     setup_redirect_chain6
                 fi
             fi
@@ -1666,18 +1707,18 @@ main() {
             ;;
         stop)
             log Info "Stopping proxy..."
-            if check_tproxy_support; then
+            if [ "$use_tproxy" -eq 1 ]; then
                 log Info "Cleaning up TPROXY chains"
                 cleanup_tproxy_chain4
                 cleanup_routing4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     cleanup_tproxy_chain6
                     cleanup_routing6
                 fi
             else
                 log Info "Cleaning up REDIRECT chains"
                 cleanup_redirect_chain4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     cleanup_redirect_chain6
                 fi
             fi
@@ -1686,18 +1727,18 @@ main() {
             ;;
         restart)
             log Info "Restarting proxy..."
-            if check_tproxy_support; then
+            if [ "$use_tproxy" -eq 1 ]; then
                 log Info "Cleaning up TPROXY chains for restart"
                 cleanup_tproxy_chain4
                 cleanup_routing4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     cleanup_tproxy_chain6
                     cleanup_routing6
                 fi
             else
                 log Info "Cleaning up REDIRECT chains for restart"
                 cleanup_redirect_chain4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     cleanup_redirect_chain6
                 fi
             fi
@@ -1712,18 +1753,18 @@ main() {
                     setup_cn_ipset || log Warn "Failed to setup ipset, CN bypass disabled"
                 fi
             fi
-            if check_tproxy_support; then
+            if [ "$use_tproxy" -eq 1 ]; then
                 log Info "Setting up TPROXY chains after restart"
                 setup_tproxy_chain4
                 setup_routing4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     setup_tproxy_chain6
                     setup_routing6
                 fi
             else
                 log Info "Setting up REDIRECT chains after restart"
                 setup_redirect_chain4
-                if [ "${PROXY_IPV6:-0}" -eq 1 ]; then
+                if [ "$PROXY_IPV6" -eq 1 ]; then
                     setup_redirect_chain6
                 fi
             fi
@@ -1736,29 +1777,6 @@ main() {
     esac
 }
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --dry-run)
-            DRY_RUN=1
-            log Debug "Dry-run mode enabled"
-            shift
-            ;;
-        start | stop | restart)
-            main_cmd="$1"
-            shift
-            ;;
-        *)
-            log Error "Usage: %s {start|stop|restart} [--dry-run]\n" "$(basename "$0")"
-            exit 1
-            ;;
-    esac
-done
-
-if [ -z "${main_cmd:-}" ]; then
-    log Error "Usage: %s {start|stop|restart} [--dry-run]\n" "$(basename "$0")"
-    exit 1
-fi
-
 check_root
 
 check_dependencies
@@ -1767,4 +1785,4 @@ load_config
 
 validate_user_group
 
-main "$main_cmd"
+main "$@"
