@@ -4,79 +4,80 @@
 
 # Proxy core configuration
 # Proxy running user and group
-CORE_USER_GROUP="root:net_admin"
+readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
 # Proxy traffic mark
-ROUTING_MARK=""
+readonly DEFAULT_ROUTING_MARK=""
 # Proxy ports (transparent proxy listening ports)
-PROXY_TCP_PORT="1536"
-PROXY_UDP_PORT="1536"
+readonly DEFAULT_PROXY_TCP_PORT="1536"
+readonly DEFAULT_PROXY_UDP_PORT="1536"
 
 # Proxy mode: 0=auto (check TPROXY support), 1=force TPROXY, 2=force REDIRECT
-PROXY_MODE=0
+readonly DEFAULT_PROXY_MODE=0
 
 # DNS configuration
 # DNS hijack method (0: disabled, 1: tproxy, 2: redirect)
-DNS_HIJACK_ENABLE=1
+readonly DEFAULT_DNS_HIJACK_ENABLE=1
 # DNS listening port
-DNS_PORT="1053"
+readonly DEFAULT_DNS_PORT="1053"
 
 # Interface definitions
 # Mobile data interface
-MOBILE_INTERFACE="rmnet_data+"
+readonly DEFAULT_MOBILE_INTERFACE="rmnet_data+"
 # WiFi interface
-WIFI_INTERFACE="wlan0"
+readonly DEFAULT_WIFI_INTERFACE="wlan0"
 # Hotspot interface
-HOTSPOT_INTERFACE="wlan2"
+readonly DEFAULT_HOTSPOT_INTERFACE="wlan2"
 # USB tethering interface
-USB_INTERFACE="rndis+"
+readonly DEFAULT_USB_INTERFACE="rndis+"
 
 # Proxy switches
-PROXY_MOBILE=1
-PROXY_WIFI=1
-PROXY_HOTSPOT=0
-PROXY_USB=0
-PROXY_TCP=1
-PROXY_UDP=1
-PROXY_IPV6=0
+readonly DEFAULT_PROXY_MOBILE=1
+readonly DEFAULT_PROXY_WIFI=1
+readonly DEFAULT_PROXY_HOTSPOT=0
+readonly DEFAULT_PROXY_USB=0
+readonly DEFAULT_PROXY_TCP=1
+readonly DEFAULT_PROXY_UDP=1
+readonly DEFAULT_PROXY_IPV6=0
 
 # Mark values
-MARK_VALUE=20
-MARK_VALUE6=25
+readonly DEFAULT_MARK_VALUE=20
+readonly DEFAULT_MARK_VALUE6=25
 
 # Routing table ID
-TABLE_ID=2025
+readonly DEFAULT_TABLE_ID=2025
 
 # Per-app proxy (use space to separate package names, supports user:package format)
-APP_PROXY_ENABLE=0
-PROXY_APPS_LIST=""
+readonly DEFAULT_APP_PROXY_ENABLE=0
+readonly DEFAULT_PROXY_APPS_LIST=""
 # Example: "com.example.app com.other"
-BYPASS_APPS_LIST=""
+readonly DEFAULT_BYPASS_APPS_LIST=""
 # Example: "com.android.shell"
-APP_PROXY_MODE="blacklist"
+readonly DEFAULT_APP_PROXY_MODE="blacklist"
 # "blacklist" or "whitelist"
 
 # CN IP bypass configuration
-BYPASS_CN_IP=0
-# CN IP list file paths (relative to script directory)
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-CN_IP_FILE="${SCRIPT_DIR}/cn.zone"
-CN_IPV6_FILE="${SCRIPT_DIR}/cn_ipv6.zone"
+readonly DEFAULT_BYPASS_CN_IP=0
+# CN IP list file paths
+_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
+readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn.zone"
+readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
 # CN IP source URLs
-CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
-CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
+readonly DEFAULT_CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
+readonly DEFAULT_CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
 
 # MAC address blacklist/whitelist configuration (hotspot mode)
-MAC_FILTER_ENABLE=0
+readonly DEFAULT_MAC_FILTER_ENABLE=0
 # MAC address blacklist/whitelist (use space to separate MAC addresses)
-PROXY_MACS_LIST=""
+readonly DEFAULT_PROXY_MACS_LIST=""
 # Example: "AA:BB:CC:DD:EE:FF 11:22:33:44:55:66"
-BYPASS_MACS_LIST=""
+readonly DEFAULT_BYPASS_MACS_LIST=""
 # Example: "FF:EE:DD:CC:BB:AA"
-MAC_PROXY_MODE="blacklist"
+readonly DEFAULT_MAC_PROXY_MODE="blacklist"
 # "blacklist" or "whitelist"
 
 # Dry-run mode (disabled by default)
-DRY_RUN=0
+readonly DEFAULT_DRY_RUN=0
 
 log() {
     level="$1"
@@ -106,115 +107,121 @@ log() {
 load_config() {
     log Info "Loading configuration from environment or defaults..."
 
+    # Dry-run mode (disabled by default)
+    DRY_RUN="${DRY_RUN:-$DEFAULT_DRY_RUN}"
+    log Info "DRY_RUN: $DRY_RUN"
+
     # Proxy core configuration
-    CORE_USER_GROUP="${CORE_USER_GROUP:-root:net_admin}"
+    CORE_USER_GROUP="${CORE_USER_GROUP:-$DEFAULT_CORE_USER_GROUP}"
     log Info "CORE_USER_GROUP: $CORE_USER_GROUP"
 
-    ROUTING_MARK="${ROUTING_MARK:-}"
+    ROUTING_MARK="${ROUTING_MARK:-$DEFAULT_ROUTING_MARK}"
     log Info "ROUTING_MARK: $ROUTING_MARK"
 
-    PROXY_TCP_PORT="${PROXY_TCP_PORT:-1536}"
+    PROXY_TCP_PORT="${PROXY_TCP_PORT:-$DEFAULT_PROXY_TCP_PORT}"
     log Info "PROXY_TCP_PORT: $PROXY_TCP_PORT"
 
-    PROXY_UDP_PORT="${PROXY_UDP_PORT:-1536}"
+    PROXY_UDP_PORT="${PROXY_UDP_PORT:-$DEFAULT_PROXY_UDP_PORT}"
     log Info "PROXY_UDP_PORT: $PROXY_UDP_PORT"
 
     # Proxy mode: 0=auto, 1=force TPROXY, 2=force REDIRECT
-    PROXY_MODE="${PROXY_MODE:-0}"
+    PROXY_MODE="${PROXY_MODE:-$DEFAULT_PROXY_MODE}"
     log Info "PROXY_MODE: $PROXY_MODE"
 
     # DNS configuration
-    DNS_HIJACK_ENABLE="${DNS_HIJACK_ENABLE:-1}"
+    DNS_HIJACK_ENABLE="${DNS_HIJACK_ENABLE:-$DEFAULT_DNS_HIJACK_ENABLE}"
     log Info "DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
 
-    DNS_PORT="${DNS_PORT:-1053}"
+    DNS_PORT="${DNS_PORT:-$DEFAULT_DNS_PORT}"
     log Info "DNS_PORT: $DNS_PORT"
 
     # Interface definitions
-    MOBILE_INTERFACE="${MOBILE_INTERFACE:-rmnet_data+}"
+    MOBILE_INTERFACE="${MOBILE_INTERFACE:-$DEFAULT_MOBILE_INTERFACE}"
     log Info "MOBILE_INTERFACE: $MOBILE_INTERFACE"
 
-    WIFI_INTERFACE="${WIFI_INTERFACE:-wlan0}"
+    WIFI_INTERFACE="${WIFI_INTERFACE:-$DEFAULT_WIFI_INTERFACE}"
     log Info "WIFI_INTERFACE: $WIFI_INTERFACE"
 
-    HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-wlan2}"
+    HOTSPOT_INTERFACE="${HOTSPOT_INTERFACE:-$DEFAULT_HOTSPOT_INTERFACE}"
     log Info "HOTSPOT_INTERFACE: $HOTSPOT_INTERFACE"
 
-    USB_INTERFACE="${USB_INTERFACE:-rndis+}"
+    USB_INTERFACE="${USB_INTERFACE:-$DEFAULT_USB_INTERFACE}"
     log Info "USB_INTERFACE: $USB_INTERFACE"
 
     # Proxy switches
-    PROXY_MOBILE="${PROXY_MOBILE:-1}"
+    PROXY_MOBILE="${PROXY_MOBILE:-$DEFAULT_PROXY_MOBILE}"
     log Info "PROXY_MOBILE: $PROXY_MOBILE"
 
-    PROXY_WIFI="${PROXY_WIFI:-1}"
+    PROXY_WIFI="${PROXY_WIFI:-$DEFAULT_PROXY_WIFI}"
     log Info "PROXY_WIFI: $PROXY_WIFI"
 
-    PROXY_HOTSPOT="${PROXY_HOTSPOT:-0}"
+    PROXY_HOTSPOT="${PROXY_HOTSPOT:-$DEFAULT_PROXY_HOTSPOT}"
     log Info "PROXY_HOTSPOT: $PROXY_HOTSPOT"
 
-    PROXY_USB="${PROXY_USB:-0}"
+    PROXY_USB="${PROXY_USB:-$DEFAULT_PROXY_USB}"
     log Info "PROXY_USB: $PROXY_USB"
 
-    PROXY_TCP="${PROXY_TCP:-1}"
+    PROXY_TCP="${PROXY_TCP:-$DEFAULT_PROXY_TCP}"
     log Info "PROXY_TCP: $PROXY_TCP"
 
-    PROXY_UDP="${PROXY_UDP:-1}"
+    PROXY_UDP="${PROXY_UDP:-$DEFAULT_PROXY_UDP}"
     log Info "PROXY_UDP: $PROXY_UDP"
 
-    PROXY_IPV6="${PROXY_IPV6:-0}"
+    PROXY_IPV6="${PROXY_IPV6:-$DEFAULT_PROXY_IPV6}"
     log Info "PROXY_IPV6: $PROXY_IPV6"
 
     # Mark values
-    MARK_VALUE="${MARK_VALUE:-20}"
+    MARK_VALUE="${MARK_VALUE:-$DEFAULT_MARK_VALUE}"
     log Info "MARK_VALUE: $MARK_VALUE"
 
-    MARK_VALUE6="${MARK_VALUE6:-25}"
+    MARK_VALUE6="${MARK_VALUE6:-$DEFAULT_MARK_VALUE6}"
     log Info "MARK_VALUE6: $MARK_VALUE6"
 
     # Routing table ID
-    TABLE_ID="${TABLE_ID:-2025}"
+    TABLE_ID="${TABLE_ID:-$DEFAULT_TABLE_ID}"
     log Info "TABLE_ID: $TABLE_ID"
 
     # Per-app proxy
-    APP_PROXY_ENABLE="${APP_PROXY_ENABLE:-0}"
+    APP_PROXY_ENABLE="${APP_PROXY_ENABLE:-$DEFAULT_APP_PROXY_ENABLE}"
     log Info "APP_PROXY_ENABLE: $APP_PROXY_ENABLE"
 
-    PROXY_APPS_LIST="${PROXY_APPS_LIST:-}"
+    PROXY_APPS_LIST="${PROXY_APPS_LIST:-$DEFAULT_PROXY_APPS_LIST}"
     log Info "PROXY_APPS_LIST: $PROXY_APPS_LIST"
 
-    BYPASS_APPS_LIST="${BYPASS_APPS_LIST:-}"
+    BYPASS_APPS_LIST="${BYPASS_APPS_LIST:-$DEFAULT_BYPASS_APPS_LIST}"
     log Info "BYPASS_APPS_LIST: $BYPASS_APPS_LIST"
 
-    APP_PROXY_MODE="${APP_PROXY_MODE:-blacklist}"
+    APP_PROXY_MODE="${APP_PROXY_MODE:-$DEFAULT_APP_PROXY_MODE}"
     log Info "APP_PROXY_MODE: $APP_PROXY_MODE"
 
     # CN IP bypass
-    BYPASS_CN_IP="${BYPASS_CN_IP:-0}"
+    BYPASS_CN_IP="${BYPASS_CN_IP:-$DEFAULT_BYPASS_CN_IP}"
     log Info "BYPASS_CN_IP: $BYPASS_CN_IP"
 
-    CN_IP_FILE="${CN_IP_FILE:-${SCRIPT_DIR}/cn.zone}"
+    CN_IP_FILE="${CN_IP_FILE:-$DEFAULT_CN_IP_FILE}"
     log Info "CN_IP_FILE: $CN_IP_FILE"
 
-    CN_IPV6_FILE="${CN_IPV6_FILE:-${SCRIPT_DIR}/cn_ipv6.zone}"
+    CN_IPV6_FILE="${CN_IPV6_FILE:-$DEFAULT_CN_IPV6_FILE}"
     log Info "CN_IPV6_FILE: $CN_IPV6_FILE"
 
+    CN_IP_URL="${CN_IP_URL:-$DEFAULT_CN_IP_URL}"
+    log Info "CN_IP_URL: $CN_IP_URL"
+
+    CN_IPV6_URL="${CN_IPV6_URL:-$DEFAULT_CN_IPV6_URL}"
+    log Info "CN_IPV6_URL: $CN_IPV6_URL"
+
     # MAC address filtering
-    MAC_FILTER_ENABLE="${MAC_FILTER_ENABLE:-0}"
+    MAC_FILTER_ENABLE="${MAC_FILTER_ENABLE:-$DEFAULT_MAC_FILTER_ENABLE}"
     log Info "MAC_FILTER_ENABLE: $MAC_FILTER_ENABLE"
 
-    PROXY_MACS_LIST="${PROXY_MACS_LIST:-}"
+    PROXY_MACS_LIST="${PROXY_MACS_LIST:-$DEFAULT_PROXY_MACS_LIST}"
     log Info "PROXY_MACS_LIST: $PROXY_MACS_LIST"
 
-    BYPASS_MACS_LIST="${BYPASS_MACS_LIST:-}"
+    BYPASS_MACS_LIST="${BYPASS_MACS_LIST:-$DEFAULT_BYPASS_MACS_LIST}"
     log Info "BYPASS_MACS_LIST: $BYPASS_MACS_LIST"
 
-    MAC_PROXY_MODE="${MAC_PROXY_MODE:-blacklist}"
+    MAC_PROXY_MODE="${MAC_PROXY_MODE:-$DEFAULT_MAC_PROXY_MODE}"
     log Info "MAC_PROXY_MODE: $MAC_PROXY_MODE"
-
-    # Dry-run mode
-    DRY_RUN="${DRY_RUN:-0}"
-    log Info "DRY_RUN: $DRY_RUN"
 
     log Info "Configuration loading completed"
 }
