@@ -264,6 +264,27 @@ validate_config() {
         return 1
     fi
 
+    case "$CORE_USER_GROUP" in
+        *:*)
+            CORE_USER=$(echo "$CORE_USER_GROUP" | cut -d: -f1)
+            CORE_GROUP=$(echo "$CORE_USER_GROUP" | cut -d: -f2)
+            log Debug "Parsed user:group as '$CORE_USER:$CORE_GROUP'"
+            ;;
+        *)
+            CORE_USER="root"
+            CORE_GROUP="net_admin"
+            log Debug "Using default user:group '$CORE_USER:$CORE_GROUP'"
+            ;;
+    esac
+
+    if [ -z "$CORE_USER" ] || [ -z "$CORE_GROUP" ]; then
+        log Warn "Empty user or group detected, using defaults"
+        CORE_USER="root"
+        CORE_GROUP="net_admin"
+    fi
+
+    log Info "Final user:group configuration: '$CORE_USER:$CORE_GROUP'"
+
     case "$APP_PROXY_MODE" in
         blacklist | whitelist) ;;
         *)
@@ -363,29 +384,6 @@ check_tproxy_support() {
         log Debug "Kernel TPROXY support not available"
         return 1
     fi
-}
-
-validate_user_group() {
-    case "$CORE_USER_GROUP" in
-        *:*)
-            CORE_USER=$(echo "$CORE_USER_GROUP" | cut -d: -f1)
-            CORE_GROUP=$(echo "$CORE_USER_GROUP" | cut -d: -f2)
-            log Debug "Parsed user:group as '$CORE_USER:$CORE_GROUP'"
-            ;;
-        *)
-            CORE_USER="root"
-            CORE_GROUP="net_admin"
-            log Debug "Using default user:group '$CORE_USER:$CORE_GROUP'"
-            ;;
-    esac
-
-    if [ -z "$CORE_USER" ] || [ -z "$CORE_GROUP" ]; then
-        log Warn "Empty user or group detected, using defaults"
-        CORE_USER="root"
-        CORE_GROUP="net_admin"
-    fi
-
-    log Info "Final user:group configuration: '$CORE_USER:$CORE_GROUP'"
 }
 
 iptables() {
@@ -1652,14 +1650,7 @@ cleanup_ipset() {
     fi
 }
 
-main() {
-    cmd="${1:-}"
-
-    if ! validate_config; then
-        log Error "Configuration validation failed"
-        exit 1
-    fi
-
+detect_proxy_mode() {
     use_tproxy=0
     case "$PROXY_MODE" in
         0)
@@ -1683,105 +1674,111 @@ main() {
             log Info "Using REDIRECT mode (forced by configuration)"
             ;;
     esac
+}
+
+start_proxy() {
+    log Info "Starting proxy setup..."
+    if [ "$BYPASS_CN_IP" -eq 1 ]; then
+        if ! check_kernel_feature "IP_SET" || ! check_kernel_feature "NETFILTER_XT_SET"; then
+            log Error "Kernel does not support ipset (CONFIG_IP_SET, CONFIG_NETFILTER_XT_SET). Cannot bypass CN IPs."
+            BYPASS_CN_IP=0
+        else
+            download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
+            if ! setup_cn_ipset; then
+                log Error "Failed to setup ipset, CN bypass disabled"
+                BYPASS_CN_IP=0
+            fi
+        fi
+    fi
+
+    if [ "$use_tproxy" -eq 1 ]; then
+        setup_tproxy_chain4
+        setup_routing4
+        if [ "$PROXY_IPV6" -eq 1 ]; then
+            setup_tproxy_chain6
+            setup_routing6
+        fi
+    else
+        setup_redirect_chain4
+        if [ "$PROXY_IPV6" -eq 1 ]; then
+            setup_redirect_chain6
+        fi
+    fi
+    log Info "Proxy setup completed"
+}
+
+stop_proxy() {
+    log Info "Stopping proxy..."
+    if [ "$use_tproxy" -eq 1 ]; then
+        log Info "Cleaning up TPROXY chains"
+        cleanup_tproxy_chain4
+        cleanup_routing4
+        if [ "$PROXY_IPV6" -eq 1 ]; then
+            cleanup_tproxy_chain6
+            cleanup_routing6
+        fi
+    else
+        log Info "Cleaning up REDIRECT chains"
+        cleanup_redirect_chain4
+        if [ "$PROXY_IPV6" -eq 1 ]; then
+            cleanup_redirect_chain6
+        fi
+    fi
+    cleanup_ipset
+    log Info "Proxy stopped"
+}
+
+parse_args() {
+    main_cmd=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            start | stop | restart)
+                if [ -n "$main_cmd" ]; then
+                    log Error "Multiple commands specified."
+                    exit 1
+                fi
+                main_cmd="$1"
+                ;;
+            --dry-run)
+                DRY_RUN=1
+                ;;
+            *)
+                log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "$main_cmd" ]; then
+        log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
+        exit 1
+    fi
+}
+
+main() {
+    cmd="${1:-}"
+
+    if ! validate_config; then
+        log Error "Configuration validation failed"
+        exit 1
+    fi
+
+    detect_proxy_mode
 
     case "$cmd" in
         start)
-            log Info "Starting proxy setup..."
-            if [ "$BYPASS_CN_IP" -eq 1 ]; then
-                if ! check_kernel_feature "IP_SET" || ! check_kernel_feature "NETFILTER_XT_SET"; then
-                    log Error "Kernel does not support ipset (CONFIG_IP_SET, CONFIG_NETFILTER_XT_SET). Cannot bypass CN IPs."
-                    BYPASS_CN_IP=0
-                else
-                    download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
-                    if ! setup_cn_ipset; then
-                        log Error "Failed to setup ipset, CN bypass disabled"
-                        BYPASS_CN_IP=0
-                    fi
-                fi
-            fi
-
-            if [ "$use_tproxy" -eq 1 ]; then
-                setup_tproxy_chain4
-                setup_routing4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    setup_tproxy_chain6
-                    setup_routing6
-                fi
-            else
-                setup_redirect_chain4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    setup_redirect_chain6
-                fi
-            fi
-            log Info "Proxy setup completed"
+            start_proxy
             ;;
         stop)
-            log Info "Stopping proxy..."
-            if [ "$use_tproxy" -eq 1 ]; then
-                log Info "Cleaning up TPROXY chains"
-                cleanup_tproxy_chain4
-                cleanup_routing4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    cleanup_tproxy_chain6
-                    cleanup_routing6
-                fi
-            else
-                log Info "Cleaning up REDIRECT chains"
-                cleanup_redirect_chain4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    cleanup_redirect_chain6
-                fi
-            fi
-            cleanup_ipset
-            log Info "Proxy stopped"
+            stop_proxy
             ;;
         restart)
             log Info "Restarting proxy..."
-            if [ "$use_tproxy" -eq 1 ]; then
-                log Info "Cleaning up TPROXY chains for restart"
-                cleanup_tproxy_chain4
-                cleanup_routing4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    cleanup_tproxy_chain6
-                    cleanup_routing6
-                fi
-            else
-                log Info "Cleaning up REDIRECT chains for restart"
-                cleanup_redirect_chain4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    cleanup_redirect_chain6
-                fi
-            fi
-            cleanup_ipset
+            stop_proxy
             sleep 2
-            if [ "$BYPASS_CN_IP" -eq 1 ]; then
-                if ! check_kernel_feature "IP_SET" || ! check_kernel_feature "NETFILTER_XT_SET"; then
-                    log Error "Kernel does not support ipset (CONFIG_IP_SET, CONFIG_NETFILTER_XT_SET). Cannot bypass CN IPs."
-                    BYPASS_CN_IP=0
-                else
-                    download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
-                    if ! setup_cn_ipset; then
-                        log Error "Failed to setup ipset, CN bypass disabled"
-                        BYPASS_CN_IP=0
-                    fi
-                fi
-            fi
-
-            if [ "$use_tproxy" -eq 1 ]; then
-                log Info "Setting up TPROXY chains after restart"
-                setup_tproxy_chain4
-                setup_routing4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    setup_tproxy_chain6
-                    setup_routing6
-                fi
-            else
-                log Info "Setting up REDIRECT chains after restart"
-                setup_redirect_chain4
-                if [ "$PROXY_IPV6" -eq 1 ]; then
-                    setup_redirect_chain6
-                fi
-            fi
+            start_proxy
             log Info "Proxy restarted"
             ;;
         *)
@@ -1791,37 +1788,12 @@ main() {
     esac
 }
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        start | stop | restart)
-            if [ -n "$main_cmd" ]; then
-                log Error "Multiple commands specified."
-                exit 1
-            fi
-            main_cmd="$1"
-            ;;
-        --dry-run)
-            DRY_RUN=1
-            ;;
-        *)
-            log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
-            exit 1
-            ;;
-    esac
-    shift
-done
-
-if [ -z "$main_cmd" ]; then
-    log Error "Usage: %s {start|stop|restart} [--dry-run]" "$(basename "$0")"
-    exit 1
-fi
-
 check_root
 
 check_dependencies
 
 load_config
 
-validate_user_group
+parse_args "$@"
 
 main "$main_cmd"
