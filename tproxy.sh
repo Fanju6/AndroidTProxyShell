@@ -678,10 +678,12 @@ setup_proxy_chain() {
     mode="$2" # tproxy or redirect
     suffix=""
     mark="$MARK_VALUE"
+    cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
         mark="$MARK_VALUE6"
+        cmd="ip6tables"
     fi
 
     # Set mode name for logging
@@ -711,13 +713,6 @@ setup_proxy_chain() {
     for c in $chains; do
         safe_chain_create "$family" "$table" "$c"
     done
-
-    cmd=""
-    if [ "$family" = "6" ]; then
-        cmd="ip6tables"
-    else
-        cmd="iptables"
-    fi
 
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix"
@@ -901,10 +896,14 @@ setup_proxy_chain() {
     fi
 
     if [ "$DNS_HIJACK_ENABLE" -ne 0 ]; then
-        if [ "$DNS_HIJACK_ENABLE" -eq 1 ] && [ "$mode" = "tproxy" ]; then
-            setup_dns_hijack "$family" "tproxy"
-        elif [ "$DNS_HIJACK_ENABLE" -eq 2 ] || [ "$mode" = "redirect" ]; then
+        if [ "$mode" = "redirect" ]; then
             setup_dns_hijack "$family" "redirect"
+        else
+            if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
+                setup_dns_hijack "$family" "redirect2"
+            else
+                setup_dns_hijack "$family" "tproxy"
+            fi
         fi
     fi
 
@@ -935,35 +934,38 @@ setup_proxy_chain() {
 
 setup_dns_hijack() {
     family="$1"
-    mode="$2" # tproxy or redirect
+    mode="$2"
     suffix=""
     mark="$MARK_VALUE"
-    cmd=""
+    cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
         mark="$MARK_VALUE6"
         cmd="ip6tables"
-    else
-        cmd="iptables"
-    fi
-
-    table="mangle"
-    if [ "$mode" = "redirect" ]; then
-        table="nat"
     fi
 
     case "$mode" in
         tproxy)
             # Handle DNS from interfaces in PREROUTING chain (DNS_HIJACK_PRE)
-            $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
-            $cmd -t "$table" -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
             # Handle local DNS hijacking in OUTPUT chain (DNS_HIJACK_OUT)
-            $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j MARK --set-mark "$mark"
-            $cmd -t "$table" -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j MARK --set-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j MARK --set-mark "$mark"
+            $cmd -t mangle -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j MARK --set-mark "$mark"
+
             log Info "DNS hijack enabled using TPROXY mode"
             ;;
         redirect)
+            # Handle DNS using REDIRECT method
+            $cmd -t nat -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+
+            log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
+            ;;
+        redirect2)
             # Handle DNS using REDIRECT method
             if [ "$family" = "6" ] && {
                 ! check_kernel_feature "IP6_NF_NAT" || ! check_kernel_feature "IP6_NF_TARGET_REDIRECT"
@@ -1064,9 +1066,11 @@ cleanup_chain() {
     family="$1"
     mode="$2" # tproxy or redirect
     suffix=""
+    cmd="iptables"
 
     if [ "$family" = "6" ]; then
         suffix="6"
+        cmd="ip6tables"
     fi
 
     # Set mode name for logging
@@ -1082,13 +1086,6 @@ cleanup_chain() {
     table="mangle"
     if [ "$mode" = "redirect" ]; then
         table="nat"
-    fi
-
-    cmd=""
-    if [ "$family" = "6" ]; then
-        cmd="ip6tables"
-    else
-        cmd="iptables"
     fi
 
     # Remove rules from main chains
@@ -1126,7 +1123,7 @@ cleanup_chain() {
     done
 
     # Remove DNS rules if applicable
-    if [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
+    if [ "$mode" = "tproxy" ] && [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
         $cmd -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -A PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
