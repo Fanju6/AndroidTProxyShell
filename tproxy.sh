@@ -99,9 +99,9 @@ log() {
     esac
 
     if [ -t 1 ]; then
-        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m" >&2
+        printf "%b\n" "${color_code}${timestamp} [${level}]: ${message}\033[0m"
     else
-        printf "%s\n" "${timestamp} [${level}]: ${message}" >&2
+        printf "%s\n" "${timestamp} [${level}]: ${message}"
     fi
 }
 
@@ -534,7 +534,7 @@ safe_chain_create() {
         cmd="ip6tables"
     fi
 
-    if ! safe_chain_exists "$family" "$table" "$chain"; then
+    if [ "$DRY_RUN" -eq 1 ] || ! safe_chain_exists "$family" "$table" "$chain"; then
         $cmd -t "$table" -N "$chain"
     fi
 
@@ -604,7 +604,7 @@ setup_cn_ipset() {
     fi
 
     if ! command -v ipset > /dev/null 2>&1; then
-        log Error "ipset not found. Cannot bypass CN IPs."
+        log Error "ipset not found. Cannot bypass CN IPs"
         return 1
     fi
 
@@ -920,14 +920,15 @@ setup_proxy_chain() {
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
         $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j MARK --set-mark "$mark"
+        log Info "TPROXY mode rules added"
     else
-        # REDIRECT mode
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
         $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+        log Info "REDIRECT mode rules added"
     fi
 
     # Add rules to main chains
-    if [ "$PROXY_UDP" -eq 1 ]; then
+    if [ "$PROXY_UDP" -eq 1 ] || [ "$mode" = "redirect" ]; then
         $cmd -t "$table" -I PREROUTING -p udp -j "PROXY_PREROUTING$suffix"
         $cmd -t "$table" -I OUTPUT -p udp -j "PROXY_OUTPUT$suffix"
         log Info "Added UDP rules to PREROUTING and OUTPUT chains"
@@ -1004,6 +1005,7 @@ setup_tproxy_chain4() {
 }
 
 setup_redirect_chain4() {
+    log Warn "REDIRECT mode only supports TCP"
     setup_proxy_chain 4 "redirect"
 }
 
@@ -1016,6 +1018,7 @@ setup_redirect_chain6() {
         log Warn "IPv6: Kernel does not support IPv6 NAT or REDIRECT, skipping IPv6 proxy setup"
         return 0
     fi
+    log Warn "REDIRECT mode only supports TCP"
     setup_proxy_chain 6 "redirect"
 }
 
@@ -1025,6 +1028,7 @@ setup_routing4() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip rule add fwmark $MARK_VALUE lookup $TABLE_ID"
         log Debug "[DRY-RUN] ip route add local 0.0.0.0/0 dev lo table $TABLE_ID"
+        log Debug "[DRY-RUN] echo 1 > /proc/sys/net/ipv4/ip_forward"
     else
         ip_rule del fwmark "$MARK_VALUE" lookup "$TABLE_ID" 2> /dev/null || true
         ip_route del local 0.0.0.0/0 dev lo table "$TABLE_ID" 2> /dev/null || true
@@ -1039,9 +1043,10 @@ setup_routing4() {
             ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
             return 1
         fi
+
+        echo 1 > /proc/sys/net/ipv4/ip_forward
     fi
 
-    echo 1 > /proc/sys/net/ipv4/ip_forward
     log Info "IPv4 routing setup completed"
 }
 
@@ -1051,6 +1056,7 @@ setup_routing6() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip -6 rule add fwmark $MARK_VALUE6 lookup $TABLE_ID"
         log Debug "[DRY-RUN] ip -6 route add local ::/0 dev lo table $TABLE_ID"
+        log Debug "[DRY-RUN] echo 1 > /proc/sys/net/ipv6/conf/all/forwarding"
     else
         ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
         ip6_route del local ::/0 dev lo table "$TABLE_ID" 2> /dev/null || true
@@ -1065,8 +1071,10 @@ setup_routing6() {
             ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
             return 1
         fi
+
+        echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
     fi
-    echo 1 > /proc/sys/net/ipv6/ip_forward
+
     log Info "IPv6 routing setup completed"
 }
 
@@ -1112,7 +1120,7 @@ cleanup_chain() {
         $cmd -t "$table" -D PREROUTING -p tcp -j "PROXY_PREROUTING$suffix" 2> /dev/null || true
         $cmd -t "$table" -D OUTPUT -p tcp -j "PROXY_OUTPUT$suffix" 2> /dev/null || true
     fi
-    if [ "$PROXY_UDP" -eq 1 ] && [ "$mode" = "tproxy" ]; then
+    if [ "$PROXY_UDP" -eq 1 ]; then
         $cmd -t "$table" -D PREROUTING -p udp -j "PROXY_PREROUTING$suffix" 2> /dev/null || true
         $cmd -t "$table" -D OUTPUT -p udp -j "PROXY_OUTPUT$suffix" 2> /dev/null || true
     fi
@@ -1135,7 +1143,7 @@ cleanup_chain() {
     if [ "$mode" = "tproxy" ] && [ "$DNS_HIJACK_ENABLE" -eq 2 ]; then
         $cmd -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
-        $cmd -t nat -A PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
+        $cmd -t nat -D PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
         $cmd -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT 2> /dev/null || true
         $cmd -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT 2> /dev/null || true
         $cmd -t nat -D OUTPUT -j "NAT_DNS_HIJACK$suffix" 2> /dev/null || true
@@ -1172,12 +1180,13 @@ cleanup_routing4() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip rule del fwmark $MARK_VALUE table $TABLE_ID pref $TABLE_ID"
         log Debug "[DRY-RUN] ip route del local 0.0.0.0/0 dev lo table $TABLE_ID"
+        log Debug "[DRY-RUN] echo 0 > /proc/sys/net/ipv4/ip_forward"
     else
         ip_rule del fwmark "$MARK_VALUE" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
         ip_route del local 0.0.0.0/0 dev lo table "$TABLE_ID" 2> /dev/null || true
+        echo 0 > /proc/sys/net/ipv4/ip_forward 2> /dev/null || true
     fi
 
-    echo 0 > /proc/sys/net/ipv4/ip_forward
     log Info "IPv4 routing cleanup completed"
 }
 
@@ -1187,12 +1196,13 @@ cleanup_routing6() {
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] ip -6 rule del fwmark $MARK_VALUE6 table $TABLE_ID pref $TABLE_ID"
         log Debug "[DRY-RUN] ip -6 route del local ::/0 dev lo table $TABLE_ID"
+        log Debug "[DRY-RUN] echo 0 > /proc/sys/net/ipv6/conf/all/forwarding"
     else
         ip6_rule del fwmark "$MARK_VALUE6" table "$TABLE_ID" pref "$TABLE_ID" 2> /dev/null || true
         ip6_route del local ::/0 dev lo table "$TABLE_ID" 2> /dev/null || true
+        echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2> /dev/null || true
     fi
 
-    echo 0 > /proc/sys/net/ipv6/ip_forward
     log Info "IPv6 routing cleanup completed"
 }
 
@@ -1242,7 +1252,7 @@ start_proxy() {
     log Info "Starting proxy setup..."
     if [ "$BYPASS_CN_IP" -eq 1 ]; then
         if ! check_kernel_feature "IP_SET" || ! check_kernel_feature "NETFILTER_XT_SET"; then
-            log Error "Kernel does not support ipset (CONFIG_IP_SET, CONFIG_NETFILTER_XT_SET). Cannot bypass CN IPs."
+            log Error "Kernel does not support ipset (CONFIG_IP_SET, CONFIG_NETFILTER_XT_SET). Cannot bypass CN IPs"
             BYPASS_CN_IP=0
         else
             download_cn_ip_list || log Warn "Failed to download CN IP list, continuing without it"
