@@ -353,6 +353,11 @@ check_kernel_feature() {
         return 0
     fi
 
+    if [ "$SKIP_CHECK_FEATURE" = "1" ]; then
+        log Debug "Kernel feature check skipped"
+        return 0
+    fi
+
     local feature="$1"
     local config_name="CONFIG_${feature}"
 
