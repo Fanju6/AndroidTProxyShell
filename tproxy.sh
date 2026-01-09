@@ -353,6 +353,11 @@ check_kernel_feature() {
         return 0
     fi
 
+    if [ "$SKIP_CHECK_FEATURE" = "1" ]; then
+        log Debug "Kernel feature check skipped"
+        return 0
+    fi
+
     local feature="$1"
     local config_name="CONFIG_${feature}"
 
@@ -1280,6 +1285,7 @@ start_proxy() {
         fi
     fi
     log Info "Proxy setup completed"
+    block_loopback_traffic enable
 }
 
 stop_proxy() {
@@ -1301,6 +1307,21 @@ stop_proxy() {
     fi
     cleanup_ipset
     log Info "Proxy stopped"
+    block_loopback_traffic disable
+}
+
+# This rule blocks local access to tproxy-port to prevent traffic loopback.
+block_loopback_traffic() {
+    case "$1" in
+        enable)
+            ip6tables -t filter -A OUTPUT -d ::1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            iptables -t filter -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            ;;
+        disable)
+            ip6tables -t filter -D OUTPUT -d ::1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            iptables -t filter -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            ;;
+    esac
 }
 
 show_usage() {
@@ -1328,7 +1349,7 @@ parse_args() {
             --dry-run)
                 DRY_RUN=1
                 ;;
-            -h|--help)
+            -h | --help)
                 show_usage
                 exit 0
                 ;;
