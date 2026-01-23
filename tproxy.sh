@@ -39,6 +39,12 @@ readonly DEFAULT_PROXY_TCP=1
 readonly DEFAULT_PROXY_UDP=1
 readonly DEFAULT_PROXY_IPV6=0
 
+# The use of 100.0.0.0/8 instead of 100.64.0.0/10 is purely due to a mistake by China Telecom's service provider, and you can change it back
+readonly DEFAULT_BYPASS_IPv4_LIST="0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32"
+readonly DEFAULT_BYPASS_IPv6_LIST="::/128 ::1/128 ::ffff:0:0/96 100::/64 64:ff9b::/96 2001::/32 2001:10::/28 2001:20::/28 2001:db8::/32 2002::/16 fe80::/10 ff00::/8"
+readonly DEFAULT_PROXY_IPv4_LIST=""
+readonly DEFAULT_PROXY_IPv6_LIST=""
+
 # Mark values
 readonly DEFAULT_MARK_VALUE=20
 readonly DEFAULT_MARK_VALUE6=25
@@ -181,6 +187,15 @@ load_config() {
     # Routing table ID
     TABLE_ID="${TABLE_ID:-$DEFAULT_TABLE_ID}"
     log Info "TABLE_ID: $TABLE_ID"
+
+    PROXY_IPv4_LIST="${PROXY_IPv4_LIST:-$DEFAULT_PROXY_IPv4_LIST}"
+    log Info "PROXY_IPv4_LIST: $PROXY_IPv4_LIST"
+    PROXY_IPv6_LIST="${PROXY_IPv6_LIST:-$DEFAULT_PROXY_IPv6_LIST}"
+    log Info "PROXY_IPv6_LIST: $PROXY_IPv6_LIST"
+    BYPASS_IPv4_LIST="${BYPASS_IPv4_LIST:-$DEFAULT_BYPASS_IPv4_LIST}"
+    log Info "BYPASS_IPv4_LIST: $BYPASS_IPv4_LIST"
+    BYPASS_IPv6_LIST="${BYPASS_IPv6_LIST:-$DEFAULT_BYPASS_IPv6_LIST}"
+    log Info "BYPASS_IPv6_LIST: $BYPASS_IPv6_LIST"
 
     # Per-app proxy
     APP_PROXY_ENABLE="${APP_PROXY_ENABLE:-$DEFAULT_APP_PROXY_ENABLE}"
@@ -713,9 +728,9 @@ setup_proxy_chain() {
     # Define chains based on family
     local chains=""
     if [ "$family" = "6" ]; then
-        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
+        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 PROXY_IP6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
     else
-        chains="PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
+        chains="PROXY_PREROUTING PROXY_OUTPUT PROXY_IP BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
     fi
 
     local table="mangle"
@@ -728,46 +743,47 @@ setup_proxy_chain() {
         safe_chain_create "$family" "$table" "$c"
     done
 
+    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_IP$suffix"
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix"
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "MAC_CHAIN$suffix"
     $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "DNS_HIJACK_PRE$suffix"
 
+    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "PROXY_IP$suffix"
     $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_IP$suffix"
     $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_INTERFACE$suffix"
     $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "APP_CHAIN$suffix"
     $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "DNS_HIJACK_OUT$suffix"
 
-    if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
-        log Info "Added local address type bypass"
-    fi
-
-    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
-        log Info "Added reply connection direction bypass"
-    fi
-
-    # Add private IP ranges based on family
     if [ "$family" = "6" ]; then
-        for subnet6 in ::/128 ::1/128 ::ffff:0:0/96 \
-            100::/64 64:ff9b::/96 2001::/32 2001:10::/28 \
-            2001:20::/28 2001:db8::/32 \
-            2002::/16 fe80::/10 ff00::/8; do
+        if [ -n "$PROXY_IPv6_LIST" ]; then
+            for subnet6 in $PROXY_IPv6_LIST; do
+                $cmd -t "$table" -A "PROXY_IP$suffix" -d "$subnet6" -j RETURN
+            done
+        fi
+        log Info "Added proxy rules for PROXY IPv6 ranges"
+    else
+        if [ -n "$PROXY_IPv4_LIST" ]; then
+            for subnet4 in $PROXY_IPv4_LIST; do
+                $cmd -t "$table" -A "PROXY_IP$suffix" -d "$subnet4" -j RETURN
+            done
+        fi
+        log Info "Added proxy rules for PROXY IPv4 ranges"
+    fi
+
+    if [ "$family" = "6" ]; then
+        for subnet6 in $BYPASS_IPv6_LIST; do
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet6" -p udp ! --dport 53 -j ACCEPT
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet6" ! -p udp -j ACCEPT
         done
+        log Info "Added bypass rules for BYPASS IPv6 ranges"
     else
-        for subnet4 in 0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 \
-            169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 \
-            192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 \
-            224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
+        for subnet4 in $BYPASS_IPv4_LIST; do
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet4" -p udp ! --dport 53 -j ACCEPT
             $cmd -t "$table" -A "BYPASS_IP$suffix" -d "$subnet4" ! -p udp -j ACCEPT
         done
+        log Info "Added bypass rules for BYPASS IPv4 ranges"
     fi
-    log Info "Added bypass rules for private IP ranges"
 
     if [ "$BYPASS_CN_IP" -eq 1 ]; then
         ipset_name="cnip"
@@ -781,6 +797,17 @@ setup_proxy_chain() {
         else
             log Warn "ipset '$ipset_name' not available, skipping CN IP bypass"
         fi
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
+        log Info "Added local address type bypass"
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
+        log Info "Added reply connection direction bypass"
     fi
 
     log Info "Configuring interface proxy rules"
@@ -1114,11 +1141,13 @@ cleanup_chain() {
     fi
 
     # Remove rules from main chains
+    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "PROXY_IP$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "MAC_CHAIN$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "DNS_HIJACK_PRE$suffix" 2> /dev/null || true
 
+    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "PROXY_IP$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "BYPASS_IP$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "BYPASS_INTERFACE$suffix" 2> /dev/null || true
     $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "APP_CHAIN$suffix" 2> /dev/null || true
@@ -1136,9 +1165,9 @@ cleanup_chain() {
     # Define chains based on family
     local chains=""
     if [ "$family" = "6" ]; then
-        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
+        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 PROXY_IP6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
     else
-        chains="PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
+        chains="PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP PROXY_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
     fi
 
     # Clean up chains
