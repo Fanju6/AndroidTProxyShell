@@ -30,6 +30,10 @@ readonly DEFAULT_HOTSPOT_INTERFACE="wlan2"
 # USB tethering interface
 readonly DEFAULT_USB_INTERFACE="rndis+"
 
+# Other interfaces that require bypassing or proxying. Multiple interfaces can be separated by spaces
+readonly DEFAULT_OTHER_BYPASS_INTERFACES=""
+readonly DEFAULT_OTHER_PROXY_INTERFACES=""
+
 # Proxy switches
 readonly DEFAULT_PROXY_MOBILE=1
 readonly DEFAULT_PROXY_WIFI=1
@@ -154,6 +158,11 @@ load_config() {
 
     USB_INTERFACE="${USB_INTERFACE:-$DEFAULT_USB_INTERFACE}"
     log Info "USB_INTERFACE: $USB_INTERFACE"
+
+    OTHER_BYPASS_INTERFACES="${OTHER_BYPASS_INTERFACES:-$DEFAULT_OTHER_BYPASS_INTERFACES}"
+    log Info "OTHER_BYPASS_INTERFACES: $OTHER_BYPASS_INTERFACES"
+    OTHER_PROXY_INTERFACES="${OTHER_PROXY_INTERFACES:-$OTHER_PROXY_INTERFACES}"
+    log Info "OTHER_PROXY_INTERFACES: $OTHER_PROXY_INTERFACES"
 
     # Proxy switches
     PROXY_MOBILE="${PROXY_MOBILE:-$DEFAULT_PROXY_MOBILE}"
@@ -854,6 +863,22 @@ setup_proxy_chain() {
         $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$USB_INTERFACE" -j ACCEPT
         log Info "USB interface $USB_INTERFACE will bypass proxy"
     fi
+
+    if [ -n "$OTHER_PROXY_INTERFACES" ]; then
+        for interface in $OTHER_PROXY_INTERFACES; do
+            $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$interface" -j RETURN
+        done
+        log Info "Other interface $OTHER_PROXY_INTERFACES will be proxied"
+    fi
+
+    if [ -n "$OTHER_BYPASS_INTERFACES" ]; then
+        for interface in $OTHER_BYPASS_INTERFACES; do
+            $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -i "$interface" -j ACCEPT
+            $cmd -t "$table" -A "BYPASS_INTERFACE$suffix" -o "$interface" -j ACCEPT
+        done
+        log Info "Other interface $OTHER_PROXY_INTERFACES will bypass proxy"
+    fi
+
     $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -j ACCEPT
     log Info "Interface proxy rules configuration completed"
 
