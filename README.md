@@ -51,7 +51,7 @@ You can change the configuration by modifying the environment variables below, o
 
 | Option                    | Default         | Description |
 |---------------------------|-----------------|-------------|
-| `CORE_USER_GROUP`         | `root:net_admin` | User and group under which the core runs (advanced users may change to a custom UID:GID; requires setcap support) |
+| `CORE_USER_GROUP`¹         | `root:net_admin` | User and group under which the core runs (advanced users may change to a custom UID:GID; requires setcap support) |
 | `PROXY_TCP_PORT` / `PROXY_UDP_PORT` | `1536` | Transparent proxy listening ports |
 | `PROXY_MODE`              | `0`         | Proxy mode: 0 (auto: prefer TPROXY, fallback REDIRECT), 1 (force TPROXY), 2 (force REDIRECT)|
 | `DNS_HIJACK_ENABLE`       | `1`            | DNS hijacking (0=disabled, 1=enable TPROXY, 2=enable REDIRECT; no change needed unless necessary) |
@@ -83,6 +83,8 @@ You can change the configuration by modifying the environment variables below, o
 | MARK_VALUE6 | 25 | Firewall mark for IPv6 routing rules |
 | TABLE_ID | 2025 | Custom ip rule/route table number |
 | DRY_RUN | 0 | Set to 1 for simulation mode (logs actions without applying) |
+  
+¹ **CORE_USER_GROUP** — This value is used by the script to exclude/bypass the proxy core's own traffic (via owner match rules), preventing loops. It should match the actual user:group under which your proxy core (sing-box, mihomo, etc.) is running. See **[Typical proxy software configuration (example)](#typical-proxy-software-configuration-example)** section below for important notes on how to launch the core on Android with the correct user/group.
 
 ### Stop
 
@@ -99,6 +101,29 @@ su -c iptables -t nat -nvL
 
 ## Typical proxy software configuration (example)
 > Important: The proxy core must listen on the specified port (default 1536) with TPROXY support enabled, and usually needs to run as root or with cap_net_admin capability.
+  
+On Android, to start the core matching your `CORE_USER_GROUP`:
+
+- **Using busybox setuidgid** (good for dropping to a specific user:group after su):
+  ```bash
+  su -c "busybox setuidgid $CORE_USER_GROUP /path/to/proxy-binary ..."
+  ```
+
+- **For non-root users** (custom UID:GID): First grant capabilities to the binary (once, as root):
+  ```bash
+  su -c "setcap cap_net_admin,cap_net_bind_service,cap_net_raw+eip /path/to/proxy-binary"
+  ```
+  Then launch with setuidgid (or su -u <uid> -g <gid>):
+  ```bash
+  su -c "busybox setuidgid $CORE_USER_GROUP /path/to/proxy-binary ..."
+  ```
+
+- **Alternative with capsh** (temporary ambient capabilities):
+  ```bash
+  su -c "capsh --caps='cap_net_admin,cap_net_bind_service,cap_net_raw+eip' --addamb='cap_net_admin,cap_net_bind_service,cap_net_raw' --secbits=1 -- -c '/path/to/proxy-binary ...'"
+  ```
+
+Required capabilities typically include: `cap_net_admin` (routing/tproxy), `cap_net_bind_service` (low ports), `cap_net_raw` (raw sockets if needed). Test with `getcap /path/to/binary`.
 
 ### sing-box example
 
