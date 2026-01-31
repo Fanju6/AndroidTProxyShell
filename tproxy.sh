@@ -95,6 +95,7 @@ log() {
     local timestamp
     local color_code
 
+    export TZ=Asia/Shanghai
     timestamp="$(date +"%Y-%m-%d %H:%M:%S")"
 
     case "$level" in
@@ -347,12 +348,12 @@ check_root() {
 }
 
 check_dependencies() {
+    export PATH="$PATH:/data/data/com.termux/files/usr/bin"
+
     if [ "$DRY_RUN" -eq 1 ]; then
         log Debug "[DRY-RUN] Skip dependency check"
         return 0
     fi
-
-    export PATH="$PATH:/data/data/com.termux/files/usr/bin"
 
     local missing=""
     local required_commands="ip iptables curl"
@@ -645,6 +646,15 @@ setup_cn_ipset() {
     else
         ipset destroy cnip 2> /dev/null || true
         ipset destroy cnip6 2> /dev/null || true
+    fi
+
+    if [ -d "/tmp" ] && [ -w "/tmp" ]; then
+        export TMPDIR="/tmp"
+    elif [ -d "/data/local/tmp" ] && [ -w "/data/local/tmp" ]; then
+        export TMPDIR="/data/local/tmp"
+    else
+        mkdir -p "${_SCRIPT_DIR}/tmp"
+        export TMPDIR="${_SCRIPT_DIR}/tmp"
     fi
 
     if [ -f "$CN_IP_FILE" ]; then
