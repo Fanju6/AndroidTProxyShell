@@ -769,15 +769,26 @@ setup_proxy_chain() {
             for subnet6 in $PROXY_IPv6_LIST; do
                 $cmd -t "$table" -A "PROXY_IP$suffix" -d "$subnet6" -j RETURN
             done
+            log Info "Added proxy rules for PROXY IPv6 ranges"
         fi
-        log Info "Added proxy rules for PROXY IPv6 ranges"
     else
         if [ -n "$PROXY_IPv4_LIST" ]; then
             for subnet4 in $PROXY_IPv4_LIST; do
                 $cmd -t "$table" -A "PROXY_IP$suffix" -d "$subnet4" -j RETURN
             done
+            log Info "Added proxy rules for PROXY IPv4 ranges"
         fi
-        log Info "Added proxy rules for PROXY IPv4 ranges"
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
+        log Info "Added local address type bypass"
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
+        log Info "Added reply connection direction bypass"
     fi
 
     if [ "$family" = "6" ]; then
@@ -806,17 +817,6 @@ setup_proxy_chain() {
         else
             log Warn "ipset '$ipset_name' not available, skipping CN IP bypass"
         fi
-    fi
-
-    if check_kernel_feature "NETFILTER_XT_MATCH_ADDRTYPE"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
-        log Info "Added local address type bypass"
-    fi
-
-    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
-        log Info "Added reply connection direction bypass"
     fi
 
     log Info "Configuring interface proxy rules"

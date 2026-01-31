@@ -5,16 +5,16 @@
 Commonly used with proxy cores like Clash, Mihomo (Clash Meta), sing-box, V2Ray, Xray, Hysteria, etc.
 
 ## Main Features
-
-- **Proxy Modes**: TPROXY (preferred, preserves source IP) + REDIRECT fallback (TCP mainly)
-- **Per-app proxy**: Blacklist / whitelist mode via package name or UID (supports multi-user: `userId:package`)
-- **Network interface control**: Independent proxy enable/disable for mobile data, Wi-Fi, hotspot (tether), USB tether, and custom interfaces
-- **Hotspot MAC filtering**: Blacklist / whitelist mode for connected devices via source MAC address (when proxying hotspot)
-- **Bypass China mainland IPs**: Auto-download CN IPv4/IPv6 lists (requires curl command)
-- **IPv6 full support**: Optional IPv6 proxy (separate mark/table/rules/ip6tables), with bypass lists
-- **DNS hijacking**: TPROXY or REDIRECT mode (custom local DNS port)
-- **Kernel feature auto-check**: Validates TPROXY, ipset, owner match, mac match, etc.
-- **Dry-run support**: Test configuration without applying changes (--dry-run)
+- **Proxy Modes**: TPROXY (preferred, preserves original source IP/port) + REDIRECT fallback (**TCP-only** in practice)
+- **Per-app proxy**: Blacklist / whitelist mode via package name or UID (supports multi-user: `userId:package` format)
+- **Network interface control**: Independent proxy enable/disable for mobile data, Wi-Fi, hotspot (tether), USB tether, and custom interfaces (via `OTHER_PROXY_INTERFACES` / `OTHER_BYPASS_INTERFACES`)
+- **Hotspot MAC filtering**: Blacklist / whitelist mode for connected hotspot clients via source MAC address (only effective when hotspot proxying is enabled)
+- **Bypass China mainland IPs**: Auto-download & ipset-based bypass of CN IPv4/IPv6 lists (requires `curl` and kernel `ipset` support)
+- **IPv6 full support**: Optional separate IPv6 proxy rules/mark/table (TPROXY preferred; REDIRECT very limited due to kernel NAT support requirements)
+- **DNS hijacking**: TPROXY or REDIRECT mode to custom local DNS port (protects against leaks; special handling for IPv6 REDIRECT compatibility)
+- **Kernel feature auto-check**: Validates required modules (`xt_TPROXY`, `xt_REDIRECT`, `xt_owner`, `xt_mac`, `ip_set`, etc.) at runtime
+- **Dry-run support**: Test configuration without applying changes (`--dry-run` flag)
+- **SKIP_CHECK_FEATURE** (advanced/optional): Force skip all kernel module/feature checks via `SKIP_CHECK_FEATURE=1`. Useful on custom/old kernels where `/proc/config.gz` is missing or checks fail incorrectly — **use with caution** as it may apply incompatible rules
 
 ## Requirements
 - Rooted Android (Magisk / KernelSU / APatch etc.)
@@ -52,6 +52,7 @@ You can change the configuration by modifying the environment variables below, o
 | Option                    | Default         | Description |
 |---------------------------|-----------------|-------------|
 | `CORE_USER_GROUP`¹         | `root:net_admin` | User and group under which the core runs (advanced users may change to a custom UID:GID; requires setcap support) |
+| `ROUTING_MARK`            | Empty | Optional firewall mark value (numeric, e.g. 99) used as fallback to bypass proxy core's own traffic when kernel lacks `xt_owner` support (NETFILTER_XT_MATCH_OWNER). If set and kernel supports `xt_mark` (NETFILTER_XT_MATCH_MARK), the script adds a rule `-m mark --mark $ROUTING_MARK -j ACCEPT` in the app chain. Many proxy cores (sing-box, mihomo, xray etc.) can mark their outbound traffic via config (e.g. "mark": 99 in outbound or streamSettings). Prevents traffic loops if UID/GID matching is unavailable. Leave empty if `xt_owner` works |
 | `PROXY_TCP_PORT` / `PROXY_UDP_PORT` | `1536` | Transparent proxy listening ports |
 | `PROXY_MODE`              | `0`         | Proxy mode: 0 (auto: prefer TPROXY, fallback REDIRECT), 1 (force TPROXY), 2 (force REDIRECT)|
 | `DNS_HIJACK_ENABLE`       | `1`            | DNS hijacking (0=disabled, 1=enable TPROXY, 2=enable REDIRECT; no change needed unless necessary) |
@@ -79,10 +80,10 @@ You can change the configuration by modifying the environment variables below, o
 | `MAC_FILTER_ENABLE`       | `0`            | Enable MAC address filtering (1=enable, 0=disable; effective only in hotspot mode `PROXY_HOTSPOT=1`) |
 | `MAC_PROXY_MODE`          | `blacklist`    | `blacklist` (bypass specified MACs) or `whitelist` (proxy only specified MACs) |
 | `BYPASS_MACS_LIST` / `PROXY_MACS_LIST` | Empty | MAC address list (multiple entries separated by spaces, e.g. `"AA:BB:CC:DD:EE:FF" "11:22:33:44:55:66"`) |
-| MARK_VALUE | 20 | Firewall mark for IPv4 routing rules |
-| MARK_VALUE6 | 25 | Firewall mark for IPv6 routing rules |
-| TABLE_ID | 2025 | Custom ip rule/route table number |
-| DRY_RUN | 0 | Set to 1 for simulation mode (logs actions without applying) |
+| `MARK_VALUE` | `20` | Firewall mark for IPv4 routing rules |
+| `MARK_VALUE6` | `25` | Firewall mark for IPv6 routing rules |
+| `TABLE_ID` | `2025` | Custom ip rule/route table number |
+| `DRY_RUN` | `0` | Set to 1 for simulation mode (logs actions without applying) |
   
 ¹ **CORE_USER_GROUP** — This value is used by the script to exclude/bypass the proxy core's own traffic (via owner match rules), preventing loops. It should match the actual user:group under which your proxy core (sing-box, mihomo, etc.) is running. See **[Typical proxy software configuration (example)](#typical-proxy-software-configuration-example)** section below for important notes on how to launch the core on Android with the correct user/group.
 
@@ -170,6 +171,29 @@ Required capabilities typically include: `cap_net_admin` (routing/tproxy), `cap_
     ]
   }
 }
+```
+
+### Clash example inbound
+```yaml
+# Transparent proxy server port for Linux (TProxy TCP and TProxy UDP)
+tproxy-port: 1536
+
+# Ensure the `dns.listen` value matches `DNS_PORT` in the config, and set `DNS_HIJACK_ENABLE` to `2`
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.0/15
+  fake-ip-filter:
+    - "*"
+    - "+.lan"
+    - "+.local"
+    - "+.market.xiaomi.com"
+    - "localhost.ptlogin2.qq.com"
+  nameserver:
+    - https://120.53.53.53/dns-query
+    - https://223.5.5.5/dns-query
 ```
 
 ### Clash Meta (mihomo) example inbound
