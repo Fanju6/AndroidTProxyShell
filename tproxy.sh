@@ -1,7 +1,5 @@
 #!/system/bin/sh
 
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-
 # Configuration (modify as needed)
 
 # Proxy core configuration
@@ -93,6 +91,9 @@ readonly DEFAULT_BLOCK_QUIC=0
 # Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
 
+_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+CONFIG_DIR="$_SCRIPT_DIR"
+
 log() {
     local level="$1"
     local message="$2"
@@ -121,6 +122,13 @@ log() {
 }
 
 load_config() {
+    if [ -f "$CONFIG_DIR/tproxy.conf" ]; then
+        log Info "Sourcing configuration file: $CONFIG_DIR/tproxy.conf"
+        source "$CONFIG_DIR/tproxy.conf"
+    else
+        log Info "No tproxy.conf found in $CONFIG_DIR, using script defaults + environment variables"
+    fi
+
     log Info "Loading configuration from environment or defaults..."
 
     # Dry-run mode (disabled by default)
@@ -1442,11 +1450,12 @@ block_quic() {
 
 show_usage() {
     cat << EOF
-Usage: $(basename "$0") {start|stop|restart} [--dry-run]
+Usage: $(basename "$0") {start|stop|restart} [options]
 
 Options:
-  --dry-run    Run without making actual changes
-  -h, --help   Show this help message
+  -d DIR, --dir DIR    Specify configuration directory (loads tproxy.conf from there if exists)
+  --dry-run            Run without making actual changes
+  -h, --help           Show this help message
 EOF
 }
 
@@ -1464,6 +1473,15 @@ parse_args() {
                 ;;
             --dry-run)
                 DRY_RUN=1
+                ;;
+            -d | --dir)
+                shift
+                if [ -z "$1" ] || [ ! -d "$1" ]; then
+                    log Error "Invalid or missing directory after -d/--dir"
+                    show_usage
+                    exit 1
+                fi
+                CONFIG_DIR="$1"
                 ;;
             -h | --help)
                 show_usage
