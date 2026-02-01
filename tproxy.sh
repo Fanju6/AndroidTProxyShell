@@ -1448,6 +1448,21 @@ block_quic() {
     esac
 }
 
+is_func() {
+    type "$1" 2>/dev/null | grep -q 'function'
+}
+
+call_func() {
+    local func="$1"
+    shift
+    if is_func "$func"; then
+        log Info "Calling user hook: $func"
+        "$func" "$@"
+    else
+        log Debug "No user hook defined: $func"
+    fi
+}
+
 show_usage() {
     cat << EOF
 Usage: $(basename "$0") {start|stop|restart} [options]
@@ -1517,15 +1532,19 @@ main() {
 
     case "$MAIN_CMD" in
         start)
+            call_func pre_start_hook
             start_proxy
             ;;
         stop)
             stop_proxy
+            call_func post_stop_hook
             ;;
         restart)
             log Info "Restarting proxy..."
             stop_proxy
+            call_func post_stop_hook
             sleep 2
+            call_func pre_start_hook
             start_proxy
             log Info "Proxy restarted"
             ;;

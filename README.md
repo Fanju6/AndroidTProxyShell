@@ -13,6 +13,7 @@ Commonly used with proxy cores like Clash, Mihomo (Clash Meta), sing-box, V2Ray,
 - **IPv6 full support**: Optional separate IPv6 proxy rules/mark/table (TPROXY preferred; REDIRECT very limited due to kernel NAT support requirements)
 - **DNS hijacking**: TPROXY or REDIRECT mode to custom local DNS port (protects against leaks; special handling for IPv6 REDIRECT compatibility)
 - **QUIC blocking**: Optional block of QUIC protocol (UDP port 443) via `BLOCK_QUIC=1` — can be global or only block non-CN destinations (when combined with `BYPASS_CN_IP=1` using ipset)
+- **User-defined hooks**: Optional `pre_start_hook()` and `post_stop_hook()` functions in `tproxy.conf` — executed before starting proxy rules and after stopping cleanup (e.g. start/stop proxy core)
 - **Kernel feature auto-check**: Validates required modules (`xt_TPROXY`, `xt_REDIRECT`, `xt_owner`, `xt_mac`, `ip_set`, etc.) at runtime
 - **Dry-run support**: Test configuration without applying changes (`--dry-run` flag)
 - **SKIP_CHECK_FEATURE** (advanced/optional): Force skip all kernel module/feature checks via `SKIP_CHECK_FEATURE=1`. Useful on custom/old kernels where `/proc/config.gz` is missing or checks fail incorrectly — **use with caution** as it may apply incompatible rules
@@ -77,6 +78,38 @@ BYPASS_CN_IP=1
 PROXY_IPV6=1
 # Add any other variables you want to override
 ```
+
+### Advanced: User Hooks (Optional)
+
+You can define two optional hook functions in `tproxy.conf` (or directly in the script) to run custom code:
+
+- `pre_start_hook()` — Executed **before** applying proxy rules (e.g. start your proxy core, check conditions)
+- `post_stop_hook()` — Executed **after** all cleanup (e.g. stop/kill proxy core, additional logging)
+
+These hooks are automatically called if defined. The script logs when they are executed or skipped.
+
+Example in tproxy.conf:
+
+```bash
+pre_start_hook() {
+    log Info "User pre-start: launching proxy core..."
+    # Example: start proxy-binary
+    su -c "busybox setuidgid $CORE_USER_GROUP /path/to/proxy-binary ..."
+    sleep 3  # wait for core to be ready
+}
+
+post_stop_hook() {
+    log Info "User post-stop: cleaning up..."
+    # Example: kill proxy process
+    pkill -f clash
+}
+```
+
+**Notes**:
+- Do **not** define functions with names that conflict with built-in script functions (e.g. `log`, `start_proxy`, `block_quic`, etc.), or it may break the script.
+- Hooks run in the same shell environment, so they can access variables like `$PROXY_TCP_PORT`, `$CORE_USER`, etc.
+- Use them to integrate proxy core startup/shutdown seamlessly.
+
 
 ### Full Configuration Variables
 
