@@ -1,5 +1,7 @@
 #!/system/bin/sh
 
+_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
 # Configuration (modify as needed)
 
 # Proxy core configuration
@@ -68,7 +70,6 @@ readonly DEFAULT_APP_PROXY_MODE="blacklist"
 # CN IP bypass configuration
 readonly DEFAULT_BYPASS_CN_IP=0
 # CN IP list file paths
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
 readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn.zone"
 readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
@@ -85,6 +86,9 @@ readonly DEFAULT_BYPASS_MACS_LIST=""
 # Example: "FF:EE:DD:CC:BB:AA"
 readonly DEFAULT_MAC_PROXY_MODE="blacklist"
 # "blacklist" or "whitelist"
+
+# block quic
+readonly DEFAULT_BLOCK_QUIC=0
 
 # Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
@@ -248,6 +252,9 @@ load_config() {
 
     MAC_PROXY_MODE="${MAC_PROXY_MODE:-$DEFAULT_MAC_PROXY_MODE}"
     log Info "MAC_PROXY_MODE: $MAC_PROXY_MODE"
+
+    BLOCK_QUIC="${BLOCK_QUIC:-$DEFAULT_BLOCK_QUIC}"
+    log Info "BLOCK_QUIC: $BLOCK_QUIC"
 
     log Info "Configuration loading completed"
 }
@@ -1350,6 +1357,7 @@ start_proxy() {
     fi
     log Info "Proxy setup completed"
     block_loopback_traffic enable
+    [ "$BLOCK_QUIC" -eq 1 ] && block_quic enable
 }
 
 stop_proxy() {
@@ -1372,6 +1380,7 @@ stop_proxy() {
     cleanup_ipset
     log Info "Proxy stopped"
     block_loopback_traffic disable
+    block_quic disable
 }
 
 # This rule blocks local access to tproxy-port to prevent traffic loopback.
@@ -1384,6 +1393,49 @@ block_loopback_traffic() {
         disable)
             ip6tables -t filter -D OUTPUT -d ::1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
             iptables -t filter -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            ;;
+    esac
+}
+
+block_quic() {
+    case "$1" in
+        enable)
+            if [ "$BYPASS_CN_IP" -eq 1 ]; then
+                iptables -A INPUT -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT
+                iptables -A FORWARD -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT
+                iptables -A OUTPUT -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT
+                if [ "$PROXY_IPV6" -eq 1 ]; then
+                    ip6tables -A INPUT -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT
+                    ip6tables -A FORWARD -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT
+                    ip6tables -A OUTPUT -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT
+                fi
+                log Info "QUIC traffic blocked with CN IP bypass"
+            else
+                iptables -A INPUT -p udp --dport 443 -j REJECT
+                iptables -A FORWARD -p udp --dport 443 -j REJECT
+                iptables -A OUTPUT -p udp --dport 443 -j REJECT
+                if [ "$PROXY_IPV6" -eq 1 ]; then
+                    ip6tables -A INPUT -p udp --dport 443 -j REJECT
+                    ip6tables -A FORWARD -p udp --dport 443 -j REJECT
+                    ip6tables -A OUTPUT -p udp --dport 443 -j REJECT
+                fi
+                log Info "QUIC traffic blocked globally"
+            fi
+            ;;
+        disable)
+            iptables -D INPUT -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT > /dev/null 2>&1
+            iptables -D FORWARD -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT > /dev/null 2>&1
+            iptables -D OUTPUT -p udp --dport 443 -m set ! --match-set cnip dst -j REJECT > /dev/null 2>&1
+            ip6tables -D INPUT -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT > /dev/null 2>&1
+            ip6tables -D FORWARD -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT > /dev/null 2>&1
+            ip6tables -D OUTPUT -p udp --dport 443 -m set ! --match-set cnip6 dst -j REJECT > /dev/null 2>&1
+            iptables -D INPUT -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            iptables -D FORWARD -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            iptables -D OUTPUT -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            ip6tables -D INPUT -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            ip6tables -D FORWARD -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            ip6tables -D OUTPUT -p udp --dport 443 -j REJECT > /dev/null 2>&1
+            log Info "QUIC traffic blocking disabled"
             ;;
     esac
 }
