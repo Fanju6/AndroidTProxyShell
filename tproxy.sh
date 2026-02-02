@@ -270,6 +270,39 @@ load_config() {
     log Info "Configuration loading completed"
 }
 
+init_tmpdir() {
+    for d in /tmp /data/local/tmp "$CONFIG_DIR/tmp"; do
+        if [ -d "$d" ] && [ -w "$d" ]; then
+            export TMPDIR="$d"
+            log Debug "Using TMPDIR: $TMPDIR"
+            return 0
+        fi
+    done
+
+    if mkdir -p "$CONFIG_DIR/tmp" 2> /dev/null && [ -w "$CONFIG_DIR/tmp" ]; then
+        export TMPDIR="$CONFIG_DIR/tmp"
+        log Info "Created fallback TMPDIR: $TMPDIR"
+        return 0
+    else
+        log Error "Failed to find or create writable TMPDIR"
+        exit 1
+    fi
+}
+
+init_kernel_config_cache() {
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    [ "$SKIP_CHECK_FEATURE" = "1" ] && return 0
+
+    if [ -f /proc/config.gz ]; then
+        if zcat /proc/config.gz > "$TMPDIR/kernel_config.cache" 2> /dev/null; then
+            log Debug "Kernel config cached to $TMPDIR/kernel_config.cache"
+        else
+            log Warn "Failed to cache /proc/config.gz"
+            rm -f "$TMPDIR/kernel_config.cache" 2> /dev/null
+        fi
+    fi
+}
+
 validate_config() {
     log Debug "Validating configuration..."
 
@@ -404,8 +437,9 @@ check_kernel_feature() {
     local feature="$1"
     local config_name="CONFIG_${feature}"
 
-    if [ -f /proc/config.gz ]; then
-        if zcat /proc/config.gz 2> /dev/null | grep -qE "^${config_name}=[ym]$"; then
+    if [ -f "$TMPDIR/kernel_config.cache" ] || [ -f /proc/config.gz ]; then
+        if grep -qE "^${config_name}=[ym]$" "$TMPDIR/kernel_config.cache" 2> /dev/null \
+            || zcat /proc/config.gz 2> /dev/null | grep -qE "^${config_name}=[ym]$"; then
             log Debug "Kernel feature $feature is enabled"
             return 0
         else
@@ -413,7 +447,7 @@ check_kernel_feature() {
             return 1
         fi
     else
-        log Debug "Cannot check kernel feature $feature: /proc/config.gz not available"
+        log Debug "Cannot check kernel feature $feature: no config available"
         return 1
     fi
 }
@@ -663,15 +697,6 @@ setup_cn_ipset() {
     else
         ipset destroy cnip 2> /dev/null || true
         ipset destroy cnip6 2> /dev/null || true
-    fi
-
-    if [ -d "/tmp" ] && [ -w "/tmp" ]; then
-        export TMPDIR="/tmp"
-    elif [ -d "/data/local/tmp" ] && [ -w "/data/local/tmp" ]; then
-        export TMPDIR="/data/local/tmp"
-    else
-        mkdir -p "${CONFIG_DIR}/tmp"
-        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 
     if [ -f "$CN_IP_FILE" ]; then
@@ -1533,6 +1558,9 @@ main() {
 
     check_root
     check_dependencies
+
+    init_tmpdir
+    init_kernel_config_cache
 
     detect_proxy_mode
 
