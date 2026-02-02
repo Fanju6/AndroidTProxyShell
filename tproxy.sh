@@ -1,7 +1,6 @@
 #!/system/bin/sh
 
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-CONFIG_DIR="$_SCRIPT_DIR"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
 # Configuration (modify as needed)
 
@@ -70,10 +69,9 @@ readonly DEFAULT_APP_PROXY_MODE="blacklist"
 
 # CN IP bypass configuration
 readonly DEFAULT_BYPASS_CN_IP=0
-# CN IP list file paths
-readonly DEFAULT_SCRIPT_DIR="$_SCRIPT_DIR"
-readonly DEFAULT_CN_IP_FILE="${DEFAULT_SCRIPT_DIR}/cn.zone"
-readonly DEFAULT_CN_IPV6_FILE="${DEFAULT_SCRIPT_DIR}/cn_ipv6.zone"
+# CN IP list file name
+readonly DEFAULT_CN_IP_FILE="cn.zone"
+readonly DEFAULT_CN_IPV6_FILE="cn_ipv6.zone"
 # CN IP source URLs
 readonly DEFAULT_CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
 readonly DEFAULT_CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
@@ -122,6 +120,11 @@ log() {
 }
 
 load_config() {
+    if [ -z "$CONFIG_DIR" ]; then
+        CONFIG_DIR="$SCRIPT_DIR"
+        log Debug "CONFIG_DIR not specified, fallback to script directory: $CONFIG_DIR"
+    fi
+
     if [ -f "$CONFIG_DIR/tproxy.conf" ]; then
         log Info "Sourcing configuration file: $CONFIG_DIR/tproxy.conf"
         source "$CONFIG_DIR/tproxy.conf"
@@ -591,52 +594,52 @@ download_cn_ip_list() {
         return 0
     fi
 
-    log Info "Checking/Downloading China mainland IP list to $CN_IP_FILE"
+    log Info "Checking/Downloading China mainland IP list to $CONFIG_DIR/$CN_IP_FILE"
 
     # Re-download if file doesn't exist or is older than 7 days
-    if [ ! -f "$CN_IP_FILE" ] || [ "$(find "$CN_IP_FILE" -mtime +7 2> /dev/null)" ]; then
+    if [ ! -f "$CONFIG_DIR/$CN_IP_FILE" ] || [ "$(find "$CONFIG_DIR/$CN_IP_FILE" -mtime +7 2> /dev/null)" ]; then
         log Info "Fetching latest China IP list from $CN_IP_URL"
         if [ "$DRY_RUN" -eq 1 ]; then
-            log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IP_URL -o $CN_IP_FILE.tmp"
+            log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IP_URL -o $CONFIG_DIR/$CN_IP_FILE.tmp"
         else
             if ! curl -fsSL --connect-timeout 10 --retry 3 \
                 "$CN_IP_URL" \
-                -o "$CN_IP_FILE.tmp"; then
+                -o "$CONFIG_DIR/$CN_IP_FILE.tmp"; then
                 log Error "Failed to download China IP list"
-                rm -f "$CN_IP_FILE.tmp"
+                rm -f "$CONFIG_DIR/$CN_IP_FILE.tmp"
                 return 1
             fi
         fi
         if [ "$DRY_RUN" -eq 0 ]; then
-            mv "$CN_IP_FILE.tmp" "$CN_IP_FILE"
+            mv "$CONFIG_DIR/$CN_IP_FILE.tmp" "$CONFIG_DIR/$CN_IP_FILE"
         fi
-        log Info "China IP list saved to $CN_IP_FILE"
+        log Info "China IP list saved to $CONFIG_DIR/$CN_IP_FILE"
     else
-        log Debug "Using existing China IP list: $CN_IP_FILE"
+        log Debug "Using existing China IP list: $CONFIG_DIR/$CN_IP_FILE"
     fi
 
     if [ "$PROXY_IPV6" -eq 1 ]; then
-        log Info "Checking/Downloading China mainland IPv6 list to $CN_IPV6_FILE"
+        log Info "Checking/Downloading China mainland IPv6 list to $CONFIG_DIR/$CN_IPV6_FILE"
 
-        if [ ! -f "$CN_IPV6_FILE" ] || [ "$(find "$CN_IPV6_FILE" -mtime +7 2> /dev/null)" ]; then
+        if [ ! -f "$CONFIG_DIR/$CN_IPV6_FILE" ] || [ "$(find "$CONFIG_DIR/$CN_IPV6_FILE" -mtime +7 2> /dev/null)" ]; then
             log Info "Fetching latest China IPv6 list from $CN_IPV6_URL"
             if [ "$DRY_RUN" -eq 1 ]; then
-                log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IPV6_URL -o $CN_IPV6_FILE.tmp"
+                log Debug "[DRY-RUN] curl -fsSL --connect-timeout 10 --retry 3 $CN_IPV6_URL -o $CONFIG_DIR/$CN_IPV6_FILE.tmp"
             else
                 if ! curl -fsSL --connect-timeout 10 --retry 3 \
                     "$CN_IPV6_URL" \
-                    -o "$CN_IPV6_FILE.tmp"; then
+                    -o "$CONFIG_DIR/$CN_IPV6_FILE.tmp"; then
                     log Error "Failed to download China IPv6 list"
-                    rm -f "$CN_IPV6_FILE.tmp"
+                    rm -f "$CONFIG_DIR/$CN_IPV6_FILE.tmp"
                     return 1
                 fi
             fi
             if [ "$DRY_RUN" -eq 0 ]; then
-                mv "$CN_IPV6_FILE.tmp" "$CN_IPV6_FILE"
+                mv "$CONFIG_DIR/$CN_IPV6_FILE.tmp" "$CONFIG_DIR/$CN_IPV6_FILE"
             fi
-            log Info "China IPv6 list saved to $CN_IPV6_FILE"
+            log Info "China IPv6 list saved to $CONFIG_DIR/$CN_IPV6_FILE"
         else
-            log Debug "Using existing China IPv6 list: $CN_IPV6_FILE"
+            log Debug "Using existing China IPv6 list: $CONFIG_DIR/$CN_IPV6_FILE"
         fi
     fi
 }
@@ -667,8 +670,8 @@ setup_cn_ipset() {
     elif [ -d "/data/local/tmp" ] && [ -w "/data/local/tmp" ]; then
         export TMPDIR="/data/local/tmp"
     else
-        mkdir -p "${_SCRIPT_DIR}/tmp"
-        export TMPDIR="${_SCRIPT_DIR}/tmp"
+        mkdir -p "${CONFIG_DIR}/tmp"
+        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 
     if [ -f "$CN_IP_FILE" ]; then
@@ -1448,7 +1451,7 @@ block_quic() {
 }
 
 is_func() {
-    type "$1" 2>/dev/null | grep -q 'function'
+    type "$1" 2> /dev/null | grep -q 'function'
 }
 
 call_func() {
@@ -1495,7 +1498,11 @@ parse_args() {
                     show_usage
                     exit 1
                 fi
-                CONFIG_DIR="$1"
+
+                CONFIG_DIR="$(cd "$1" 2> /dev/null && pwd -P)" || {
+                    log Error "Failed to resolve config directory: $1"
+                    exit 1
+                }
                 ;;
             -h | --help)
                 show_usage
