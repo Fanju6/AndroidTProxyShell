@@ -1,5 +1,8 @@
 #!/system/bin/sh
 
+_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+CONFIG_DIR="$_SCRIPT_DIR"
+
 # Configuration (modify as needed)
 
 # Proxy core configuration
@@ -91,9 +94,6 @@ readonly DEFAULT_BLOCK_QUIC=0
 # Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
 
-_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-CONFIG_DIR="$_SCRIPT_DIR"
-
 log() {
     local level="$1"
     local message="$2"
@@ -174,7 +174,7 @@ load_config() {
 
     OTHER_BYPASS_INTERFACES="${OTHER_BYPASS_INTERFACES:-$DEFAULT_OTHER_BYPASS_INTERFACES}"
     log Info "OTHER_BYPASS_INTERFACES: $OTHER_BYPASS_INTERFACES"
-    OTHER_PROXY_INTERFACES="${OTHER_PROXY_INTERFACES:-$OTHER_PROXY_INTERFACES}"
+    OTHER_PROXY_INTERFACES="${OTHER_PROXY_INTERFACES:-$DEFAULT_OTHER_PROXY_INTERFACES}"
     log Info "OTHER_PROXY_INTERFACES: $OTHER_PROXY_INTERFACES"
 
     # Proxy switches
@@ -581,9 +581,8 @@ safe_chain_create() {
 
     if [ "$DRY_RUN" -eq 1 ] || ! safe_chain_exists "$family" "$table" "$chain"; then
         $cmd -t "$table" -N "$chain"
+        $cmd -t "$table" -F "$chain"
     fi
-
-    $cmd -t "$table" -F "$chain"
 }
 
 download_cn_ip_list() {
