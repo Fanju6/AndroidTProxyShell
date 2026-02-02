@@ -270,6 +270,52 @@ load_config() {
     log Info "Configuration loading completed"
 }
 
+save_runtime_config() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] Skip saving runtime config"
+        return 0
+    fi
+
+    local runtime_file="$CONFIG_DIR/runtime_tproxy.conf"
+    log Info "Saving runtime config to $runtime_file"
+
+    {
+        echo "Runtime config slice for stop/cleanup only (generated at $(date))"
+        echo "CONFIG_DIR=$CONFIG_DIR"
+        echo "PROXY_TCP=$PROXY_TCP"
+        echo "PROXY_UDP=$PROXY_UDP"
+        echo "PROXY_IPV6=$PROXY_IPV6"
+        echo "PROXY_MODE=$PROXY_MODE"
+        echo "BYPASS_CN_IP=$BYPASS_CN_IP"
+        echo "BLOCK_QUIC=$BLOCK_QUIC"
+        echo "DNS_HIJACK_ENABLE=$DNS_HIJACK_ENABLE"
+        echo "TABLE_ID=$TABLE_ID"
+        echo "MARK_VALUE=$MARK_VALUE"
+        echo "MARK_VALUE6=$MARK_VALUE6"
+    } > "$runtime_file" || {
+        log Warn "Failed to save runtime config to $runtime_file"
+    }
+}
+
+load_runtime_config() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log Debug "[DRY-RUN] Skip loading runtime config"
+        return 0
+    fi
+
+    local runtime_file="$CONFIG_DIR/runtime_tproxy.conf"
+    if [ -f "$runtime_file" ]; then
+        log Info "Loading runtime config from $runtime_file for cleanup"
+        source "$runtime_file" || {
+            log Warn "Failed to load runtime config from $runtime_file, using current config"
+            return 1
+        }
+    else
+        log Debug "No runtime config found at $runtime_file, using current config for cleanup"
+        return 1
+    fi
+}
+
 init_tmpdir() {
     for d in /tmp /data/local/tmp "$CONFIG_DIR/tmp"; do
         if [ -d "$d" ] && [ -w "$d" ]; then
@@ -1393,10 +1439,16 @@ start_proxy() {
     log Info "Proxy setup completed"
     block_loopback_traffic enable
     [ "$BLOCK_QUIC" -eq 1 ] && block_quic enable
+    save_runtime_config
 }
 
 stop_proxy() {
     log Info "Stopping proxy..."
+    if load_runtime_config; then
+        log Info "Using runtime config for cleanup"
+    else
+        log Warn "Using current config for cleanup (runtime config unavailable)"
+    fi
     if [ "$USE_TPROXY" -eq 1 ]; then
         log Info "Cleaning up TPROXY chains"
         cleanup_tproxy_chain4
@@ -1416,6 +1468,7 @@ stop_proxy() {
     log Info "Proxy stopped"
     block_loopback_traffic disable
     block_quic disable
+    [ "$DRY_RUN" -eq 1 ] || rm -f "$CONFIG_DIR/runtime_tproxy.conf" 2> /dev/null
 }
 
 # This rule blocks local access to tproxy-port to prevent traffic loopback.
