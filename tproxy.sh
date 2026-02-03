@@ -280,7 +280,7 @@ save_runtime_config() {
     log Info "Saving runtime config to $runtime_file"
 
     {
-        echo "Runtime config slice for stop/cleanup only (generated at $(date))"
+        echo "# Runtime config slice for stop/cleanup only (generated at $(date))"
         echo "CONFIG_DIR=$CONFIG_DIR"
         echo "PROXY_TCP=$PROXY_TCP"
         echo "PROXY_UDP=$PROXY_UDP"
