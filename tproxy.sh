@@ -1,6 +1,8 @@
 #!/system/bin/sh
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+# Version (use YY.MM.DD format)
+readonly SCRIPT_VERSION="v26.02.04"
 
 # Configuration (modify as needed)
 
@@ -1559,6 +1561,8 @@ Commands:
   restart   Equivalent to stop → short delay → start
 
 Options:
+  -v, --version              Show version number and exit
+
   -d DIR, --dir DIR
       Specify the base configuration directory.
       Default: the directory where this script is located.
@@ -1633,6 +1637,10 @@ parse_args() {
             --verbose)
                 VERBOSE=1
                 ;;
+            -v | --version)
+                echo "$SCRIPT_VERSION"
+                exit 0
+                ;;
             -d | --dir)
                 shift
                 if [ $# -eq 0 ] || [ -z "$1" ]; then
@@ -1670,6 +1678,10 @@ parse_args() {
 }
 
 main() {
+    local script_name
+    script_name=$(basename "$0")
+    log Debug "Starting ${script_name} ${SCRIPT_VERSION}"
+
     load_config
 
     if [ "$DRY_RUN" -eq 1 ]; then
