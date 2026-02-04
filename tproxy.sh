@@ -9,6 +9,7 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 readonly DEFAULT_CORE_USER_GROUP="root:net_admin"
 # Proxy traffic mark
 readonly DEFAULT_ROUTING_MARK=""
+readonly DEFAULT_FORCE_MARK_BYPASS=0
 # Proxy ports (transparent proxy listening ports)
 readonly DEFAULT_PROXY_TCP_PORT="1536"
 readonly DEFAULT_PROXY_UDP_PORT="1536"
@@ -159,6 +160,7 @@ load_config() {
     DRY_RUN="${DRY_RUN:-$DEFAULT_DRY_RUN}"
     CORE_USER_GROUP="${CORE_USER_GROUP:-$DEFAULT_CORE_USER_GROUP}"
     ROUTING_MARK="${ROUTING_MARK:-$DEFAULT_ROUTING_MARK}"
+    FORCE_MARK_BYPASS="${FORCE_MARK_BYPASS:-$DEFAULT_FORCE_MARK_BYPASS}"
     PROXY_TCP_PORT="${PROXY_TCP_PORT:-$DEFAULT_PROXY_TCP_PORT}"
     PROXY_UDP_PORT="${PROXY_UDP_PORT:-$DEFAULT_PROXY_UDP_PORT}"
     PROXY_MODE="${PROXY_MODE:-$DEFAULT_PROXY_MODE}"
@@ -203,6 +205,7 @@ load_config() {
         log Debug "DRY_RUN: $DRY_RUN"
         log Debug "CORE_USER_GROUP: $CORE_USER_GROUP"
         log Debug "ROUTING_MARK: $ROUTING_MARK"
+        log Debug "FORCE_MARK_BYPASS: $FORCE_MARK_BYPASS"
         log Debug "PROXY_TCP_PORT: $PROXY_TCP_PORT"
         log Debug "PROXY_UDP_PORT: $PROXY_UDP_PORT"
         log Debug "PROXY_MODE: $PROXY_MODE"
@@ -1022,14 +1025,23 @@ setup_proxy_chain() {
         fi
     fi
 
-    if check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+    local bypass_success=0
+
+    if [ "$FORCE_MARK_BYPASS" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
+        $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
+        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (forced)"
+        bypass_success=1
+    elif check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
         log Info "Added bypass for core user $CORE_USER:$CORE_GROUP"
-    fi
-    if check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
+        bypass_success=1
+    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
         $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
         log Info "Added bypass for marked traffic with core mark $ROUTING_MARK"
-    else
+        bypass_success=1
+    fi
+
+    if [ "$bypass_success" -eq 0 ]; then
         log Error "Core traffic bypass not configured, may cause traffic loop"
     fi
 
