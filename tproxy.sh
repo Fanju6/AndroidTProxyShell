@@ -1,8 +1,8 @@
-#!/system/bin/sh
+#!/bin/sh
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # Version (use YY.MM.DD format)
-readonly SCRIPT_VERSION="v26.02.04"
+readonly SCRIPT_VERSION="v26.02.09"
 
 # Configuration (modify as needed)
 
@@ -264,10 +264,12 @@ save_runtime_config() {
     {
         echo "# Runtime config slice for stop/cleanup only (generated at $(date))"
         echo "CONFIG_DIR=$CONFIG_DIR"
+        echo "CORE_USER_GROUP=$CORE_USER_GROUP"
         echo "PROXY_TCP=$PROXY_TCP"
         echo "PROXY_UDP=$PROXY_UDP"
         echo "PROXY_IPV6=$PROXY_IPV6"
         echo "PROXY_MODE=$PROXY_MODE"
+        echo "OTHER_PROXY_INTERFACES=$OTHER_PROXY_INTERFACES"
         echo "BYPASS_CN_IP=$BYPASS_CN_IP"
         echo "BLOCK_QUIC=$BLOCK_QUIC"
         echo "DNS_HIJACK_ENABLE=$DNS_HIJACK_ENABLE"
@@ -841,11 +843,7 @@ setup_proxy_chain() {
 
     # Define chains based on family
     local chains=""
-    if [ "$family" = "6" ]; then
-        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 PROXY_IP6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
-    else
-        chains="PROXY_PREROUTING PROXY_OUTPUT PROXY_IP BYPASS_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
-    fi
+    chains="PROXY_PREROUTING$suffix PROXY_OUTPUT$suffix DIVERT$suffix PROXY_IP$suffix BYPASS_IP$suffix BYPASS_INTERFACE$suffix PROXY_INTERFACE$suffix DNS_HIJACK_PRE$suffix DNS_HIJACK_OUT$suffix APP_CHAIN$suffix MAC_CHAIN$suffix"
 
     local table="mangle"
     if [ "$mode" = "redirect" ]; then
@@ -857,17 +855,75 @@ setup_proxy_chain() {
         safe_chain_create "$family" "$table" "$c"
     done
 
-    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_IP$suffix"
-    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
-    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix"
-    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "MAC_CHAIN$suffix"
-    $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "DNS_HIJACK_PRE$suffix"
+    if check_kernel_feature "NETFILTER_XT_TARGET_MARK" && check_kernel_feature "NETFILTER_XT_MATCH_SOCKET"; then
+        $cmd -t "$table" -A DIVERT$suffix -j MARK --set-mark "$mark"
+        $cmd -t "$table" -A DIVERT$suffix -j ACCEPT
 
-    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "PROXY_IP$suffix"
-    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_IP$suffix"
-    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_INTERFACE$suffix"
-    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "APP_CHAIN$suffix"
-    $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "DNS_HIJACK_OUT$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -m socket -j DIVERT$suffix
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m conntrack --ctdir REPLY -j ACCEPT
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m conntrack --ctdir REPLY -j ACCEPT
+        log Info "Added reply connection direction bypass"
+    fi
+
+    local bypass_success=0
+    if [ "$FORCE_MARK_BYPASS" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
+        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (forced)"
+        bypass_success=1
+    elif check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
+        log Info "Added bypass for core user $CORE_USER:$CORE_GROUP"
+        bypass_success=1
+    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
+        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK"
+        bypass_success=1
+    fi
+    if [ "$bypass_success" -eq 0 ]; then
+        log Error "Core traffic bypass not configured, may cause traffic loop"
+    fi
+
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "PROXY_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "MAC_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "DNS_HIJACK_PRE$suffix"
+
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "PROXY_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "MAC_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "DNS_HIJACK_PRE$suffix"
+
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p tcp --syn -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p tcp --syn -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p tcp --syn -j "BYPASS_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p tcp --syn -j "APP_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p tcp --syn -j "DNS_HIJACK_OUT$suffix"
+
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "BYPASS_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "APP_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -p udp -m conntrack --ctstate NEW,RELATED -j "DNS_HIJACK_OUT$suffix"
+    else
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "MAC_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j "DNS_HIJACK_PRE$suffix"
+
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "PROXY_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_IP$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "BYPASS_INTERFACE$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "APP_CHAIN$suffix"
+        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j "DNS_HIJACK_OUT$suffix"
+    fi
 
     local subnet4
     local subnet6
@@ -891,11 +947,6 @@ setup_proxy_chain() {
         $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL -p udp ! --dport 53 -j ACCEPT
         $cmd -t "$table" -A "BYPASS_IP$suffix" -m addrtype --dst-type LOCAL ! -p udp -j ACCEPT
         log Info "Added local address type bypass"
-    fi
-
-    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
-        $cmd -t "$table" -A "BYPASS_IP$suffix" -m conntrack --ctdir REPLY -j ACCEPT
-        log Info "Added reply connection direction bypass"
     fi
 
     if [ "$family" = "6" ]; then
@@ -1027,26 +1078,6 @@ setup_proxy_chain() {
         fi
     fi
 
-    local bypass_success=0
-
-    if [ "$FORCE_MARK_BYPASS" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
-        $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
-        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK (forced)"
-        bypass_success=1
-    elif check_kernel_feature "NETFILTER_XT_MATCH_OWNER"; then
-        $cmd -t "$table" -A "APP_CHAIN$suffix" -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
-        log Info "Added bypass for core user $CORE_USER:$CORE_GROUP"
-        bypass_success=1
-    elif check_kernel_feature "NETFILTER_XT_MATCH_MARK" && [ -n "$ROUTING_MARK" ]; then
-        $cmd -t "$table" -A "APP_CHAIN$suffix" -m mark --mark "$ROUTING_MARK" -j ACCEPT
-        log Info "Added bypass for marked traffic with core mark $ROUTING_MARK"
-        bypass_success=1
-    fi
-
-    if [ "$bypass_success" -eq 0 ]; then
-        log Error "Core traffic bypass not configured, may cause traffic loop"
-    fi
-
     local uids
     local uid
     if [ "$APP_PROXY_ENABLE" -eq 1 ]; then
@@ -1103,15 +1134,34 @@ setup_proxy_chain() {
         fi
     fi
 
-    if [ "$mode" = "tproxy" ]; then
-        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
-        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
-        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j MARK --set-mark "$mark"
-        log Info "TPROXY mode rules added"
+    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+        if [ "$mode" = "tproxy" ]; then
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m conntrack --ctstate NEW,RELATED -j CONNMARK --set-mark "$mark"
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -m connmark --mark "$mark" -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -m connmark --mark "$mark" -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m conntrack --ctstate NEW,RELATED -j CONNMARK --set-mark "$mark"
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m connmark --mark "$mark" -j MARK --set-mark "$mark"
+            log Info "TPROXY mode rules added"
+        else
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m conntrack --ctstate NEW,RELATED -j CONNMARK --set-mark "$mark"
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m connmark --mark "$mark" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m conntrack --ctstate NEW,RELATED -j CONNMARK --set-mark "$mark"
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -m connmark --mark "$mark" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+            log Info "REDIRECT mode rules added"
+        fi
     else
-        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
-        $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
-        log Info "REDIRECT mode rules added"
+        if [ "$mode" = "tproxy" ]; then
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p udp -j TPROXY --on-port "$PROXY_UDP_PORT" --tproxy-mark "$mark"
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j MARK --set-mark "$mark"
+            log Info "TPROXY mode rules added"
+        else
+            $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+            $cmd -t "$table" -A "PROXY_OUTPUT$suffix" -j REDIRECT --to-ports "$PROXY_TCP_PORT"
+            log Info "REDIRECT mode rules added"
+        fi
     fi
 
     # Add rules to main chains
@@ -1153,11 +1203,10 @@ setup_dns_hijack() {
             ;;
         redirect)
             # Handle DNS using REDIRECT method
-            $cmd -t nat -A "DNS_HIJACK_PRE$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            $cmd -t nat -A "DNS_HIJACK_PRE$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            $cmd -t nat -A "DNS_HIJACK_OUT$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-            $cmd -t nat -A "DNS_HIJACK_OUT$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
-
+            $cmd -t nat -A "PROXY_PREROUTING$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "PROXY_PREROUTING$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "PROXY_OUTPUT$suffix" -p tcp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
+            $cmd -t nat -A "PROXY_OUTPUT$suffix" -p udp --dport 53 -j REDIRECT --to-ports "$DNS_PORT"
             log Info "DNS hijack enabled using REDIRECT mode to port $DNS_PORT"
             ;;
         redirect2)
@@ -1274,19 +1323,6 @@ cleanup_chain() {
         table="nat"
     fi
 
-    # Remove rules from main chains
-    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "PROXY_IP$suffix"
-    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "BYPASS_IP$suffix"
-    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "PROXY_INTERFACE$suffix"
-    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "MAC_CHAIN$suffix"
-    $cmd -t "$table" -D "PROXY_PREROUTING$suffix" -j "DNS_HIJACK_PRE$suffix"
-
-    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "PROXY_IP$suffix"
-    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "BYPASS_IP$suffix"
-    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "BYPASS_INTERFACE$suffix"
-    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "APP_CHAIN$suffix"
-    $cmd -t "$table" -D "PROXY_OUTPUT$suffix" -j "DNS_HIJACK_OUT$suffix"
-
     if [ "$PROXY_TCP" -eq 1 ]; then
         $cmd -t "$table" -D PREROUTING -p tcp -j "PROXY_PREROUTING$suffix"
         $cmd -t "$table" -D OUTPUT -p tcp -j "PROXY_OUTPUT$suffix"
@@ -1298,11 +1334,7 @@ cleanup_chain() {
 
     # Define chains based on family
     local chains=""
-    if [ "$family" = "6" ]; then
-        chains="PROXY_PREROUTING6 PROXY_OUTPUT6 PROXY_IP6 BYPASS_IP6 BYPASS_INTERFACE6 PROXY_INTERFACE6 DNS_HIJACK_PRE6 DNS_HIJACK_OUT6 APP_CHAIN6 MAC_CHAIN6"
-    else
-        chains="PROXY_PREROUTING PROXY_OUTPUT BYPASS_IP PROXY_IP BYPASS_INTERFACE PROXY_INTERFACE DNS_HIJACK_PRE DNS_HIJACK_OUT APP_CHAIN MAC_CHAIN"
-    fi
+    chains="PROXY_PREROUTING$suffix PROXY_OUTPUT$suffix DIVERT$suffix PROXY_IP$suffix BYPASS_IP$suffix BYPASS_INTERFACE$suffix PROXY_INTERFACE$suffix DNS_HIJACK_PRE$suffix DNS_HIJACK_OUT$suffix APP_CHAIN$suffix MAC_CHAIN$suffix"
 
     # Clean up chains
     for c in $chains; do
@@ -1315,6 +1347,12 @@ cleanup_chain() {
         $cmd -t nat -D PREROUTING -i "$MOBILE_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
         $cmd -t nat -D PREROUTING -i "$WIFI_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
         $cmd -t nat -D PREROUTING -i "$USB_INTERFACE" -j "NAT_DNS_HIJACK$suffix"
+        local interface
+        if [ -n "$OTHER_PROXY_INTERFACES" ]; then
+            for interface in $OTHER_PROXY_INTERFACES; do
+                $cmd -t nat -D PREROUTING -i "$interface" -j "NAT_DNS_HIJACK$suffix"
+            done
+        fi
         $cmd -t nat -D OUTPUT -p udp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
         $cmd -t nat -D OUTPUT -p tcp --dport 53 -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -j ACCEPT
         $cmd -t nat -D OUTPUT -j "NAT_DNS_HIJACK$suffix"
@@ -1622,6 +1660,7 @@ EOF
 
 parse_args() {
     MAIN_CMD=""
+    VERBOSE=0
     while [ $# -gt 0 ]; do
         case "$1" in
             start | stop | restart)
