@@ -720,10 +720,10 @@ setup_cn_ipset() {
     local ipv4_count
     local ipv6_count
 
-    if [ -f "$CN_IP_FILE" ]; then
-        log Debug "Loading IPv4 CIDR from $CN_IP_FILE"
+    if [ -f "$CONFIG_DIR/$CN_IP_FILE" ]; then
+        log Debug "Loading IPv4 CIDR from $CONFIG_DIR/$CN_IP_FILE"
 
-        ipv4_count=$(wc -l < "$CN_IP_FILE" 2> /dev/null || echo "0")
+        ipv4_count=$(wc -l < "$CONFIG_DIR/$CN_IP_FILE" 2> /dev/null || echo "0")
 
         log Debug "[EXEC] ipset create cnip hash:net family inet hashsize 8192 maxelem 65536"
         log Debug "[EXEC] Generating temporary ipset restore file with $ipv4_count entries"
@@ -735,7 +735,7 @@ setup_cn_ipset() {
             }
             {
                 echo "create cnip hash:net family inet hashsize 8192 maxelem 65536"
-                awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip %s\n", $0}' "$CN_IP_FILE"
+                awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip %s\n", $0}' "$CONFIG_DIR/$CN_IP_FILE"
             } > "$temp_file" || {
                 log Error "Failed to write to temporary file: $temp_file"
                 rm -f "$temp_file"
@@ -762,16 +762,16 @@ setup_cn_ipset() {
         fi
 
     else
-        log Error "CN IP file not found: $CN_IP_FILE"
+        log Error "CN IP file not found: $CONFIG_DIR/$CN_IP_FILE"
         return 1
     fi
     log Info "ipset 'cnip' loaded with China mainland IPs"
 
     if [ "$PROXY_IPV6" -eq 1 ]; then
-        if [ -f "$CN_IPV6_FILE" ]; then
-            log Debug "Loading IPv6 CIDR from $CN_IPV6_FILE"
+        if [ -f "$CONFIG_DIR/$CN_IPV6_FILE" ]; then
+            log Debug "Loading IPv6 CIDR from $CONFIG_DIR/$CN_IPV6_FILE"
 
-            ipv6_count=$(wc -l < "$CN_IPV6_FILE" 2> /dev/null || echo "0")
+            ipv6_count=$(wc -l < "$CONFIG_DIR/$CN_IPV6_FILE" 2> /dev/null || echo "0")
 
             log Debug "[EXEC] ipset create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
             log Debug "[EXEC] Generating temporary ipset restore file with $ipv6_count entries"
@@ -783,7 +783,7 @@ setup_cn_ipset() {
                 }
                 {
                     echo "create cnip6 hash:net family inet6 hashsize 8192 maxelem 65536"
-                    awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip6 %s\n", $0}' "$CN_IPV6_FILE"
+                    awk '!/^[[:space:]]*#/ && NF > 0 {printf "add cnip6 %s\n", $0}' "$CONFIG_DIR/$CN_IPV6_FILE"
                 } > "$temp_file6" || {
                     log Error "Failed to write to temporary file: $temp_file6"
                     rm -f "$temp_file6"
@@ -810,7 +810,7 @@ setup_cn_ipset() {
             fi
 
         else
-            log Error "CN IPv6 file not found: $CN_IPV6_FILE"
+            log Error "CN IPv6 file not found: $CONFIG_DIR/$CN_IPV6_FILE"
             return 1
         fi
 
