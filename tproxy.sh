@@ -2,7 +2,7 @@
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # Version (use YY.MM.DD format)
-readonly SCRIPT_VERSION="v26.02.18"
+readonly SCRIPT_VERSION="v26.02.18.1"
 
 # Configuration (modify as needed)
 
@@ -859,7 +859,7 @@ setup_proxy_chain() {
         $cmd -t "$table" -A DIVERT$suffix -j MARK --set-mark "$mark"
         $cmd -t "$table" -A DIVERT$suffix -j ACCEPT
 
-        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -m socket -j DIVERT$suffix
+        $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -m socket --transparent -j DIVERT$suffix
     fi
 
     if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
