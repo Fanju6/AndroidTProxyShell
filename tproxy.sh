@@ -2,7 +2,7 @@
 
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # Version (use YY.MM.DD format)
-readonly SCRIPT_VERSION="v26.02.09"
+readonly SCRIPT_VERSION="v26.02.18"
 
 # Configuration (modify as needed)
 
@@ -1086,7 +1086,7 @@ setup_proxy_chain() {
             case "$APP_PROXY_MODE" in
                 blacklist)
                     if [ -n "$BYPASS_APPS_LIST" ]; then
-                        uids=$(find_packages_uid "$BYPASS_APPS_LIST")
+                        uids=$(find_packages_uid $BYPASS_APPS_LIST)
                         if [ $? -eq 0 ] && [ -n "$uids" ]; then
                             for uid in $uids; do
                                 if [ -n "$uid" ]; then
@@ -1102,7 +1102,7 @@ setup_proxy_chain() {
                     ;;
                 whitelist)
                     if [ -n "$PROXY_APPS_LIST" ]; then
-                        uids=$(find_packages_uid "$BYPASS_APPS_LIST")
+                        uids=$(find_packages_uid $PROXY_APPS_LIST)
                         if [ $? -eq 0 ] && [ -n "$uids" ]; then
                             for uid in $uids; do
                                 if [ -n "$uid" ]; then
