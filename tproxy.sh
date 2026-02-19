@@ -19,6 +19,10 @@ readonly DEFAULT_PROXY_UDP_PORT="1536"
 # Proxy mode: 0=auto (check TPROXY support), 1=force TPROXY, 2=force REDIRECT
 readonly DEFAULT_PROXY_MODE=0
 
+# Performance mode (0=normal, 1=performance optimized)
+# When enabled, may enable some features (e.g. conntrack) for better speed
+readonly DEFAULT_PERFORMANCE_MODE=0
+
 # DNS configuration
 # DNS hijack method (0: disabled, 1: tproxy, 2: redirect)
 readonly DEFAULT_DNS_HIJACK_ENABLE=1
@@ -166,6 +170,7 @@ load_config() {
     PROXY_TCP_PORT="${PROXY_TCP_PORT:-$DEFAULT_PROXY_TCP_PORT}"
     PROXY_UDP_PORT="${PROXY_UDP_PORT:-$DEFAULT_PROXY_UDP_PORT}"
     PROXY_MODE="${PROXY_MODE:-$DEFAULT_PROXY_MODE}"
+    PERFORMANCE_MODE="${PERFORMANCE_MODE:-$DEFAULT_PERFORMANCE_MODE}"
     DNS_HIJACK_ENABLE="${DNS_HIJACK_ENABLE:-$DEFAULT_DNS_HIJACK_ENABLE}"
     DNS_PORT="${DNS_PORT:-$DEFAULT_DNS_PORT}"
     MOBILE_INTERFACE="${MOBILE_INTERFACE:-$DEFAULT_MOBILE_INTERFACE}"
@@ -211,6 +216,7 @@ load_config() {
         log Debug "PROXY_TCP_PORT: $PROXY_TCP_PORT"
         log Debug "PROXY_UDP_PORT: $PROXY_UDP_PORT"
         log Debug "PROXY_MODE: $PROXY_MODE"
+        log Debug "PERFORMANCE_MODE: $PERFORMANCE_MODE"
         log Debug "DNS_HIJACK_ENABLE: $DNS_HIJACK_ENABLE"
         log Debug "DNS_PORT: $DNS_PORT"
         log Debug "MOBILE_INTERFACE: $MOBILE_INTERFACE"
@@ -855,7 +861,7 @@ setup_proxy_chain() {
         safe_chain_create "$family" "$table" "$c"
     done
 
-    if check_kernel_feature "NETFILTER_XT_TARGET_MARK" && check_kernel_feature "NETFILTER_XT_MATCH_SOCKET"; then
+    if [ "$PERFORMANCE_MODE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_TARGET_MARK" && check_kernel_feature "NETFILTER_XT_MATCH_SOCKET"; then
         $cmd -t "$table" -A DIVERT$suffix -j MARK --set-mark "$mark"
         $cmd -t "$table" -A DIVERT$suffix -j ACCEPT
 
@@ -887,7 +893,7 @@ setup_proxy_chain() {
         log Error "Core traffic bypass not configured, may cause traffic loop"
     fi
 
-    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+    if [ "$PERFORMANCE_MODE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "PROXY_IP$suffix"
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "BYPASS_IP$suffix"
         $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp --syn -j "PROXY_INTERFACE$suffix"
@@ -1134,7 +1140,7 @@ setup_proxy_chain() {
         fi
     fi
 
-    if check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
+    if [ "$PERFORMANCE_MODE" -eq 1 ] && check_kernel_feature "NETFILTER_XT_MATCH_CONNTRACK"; then
         if [ "$mode" = "tproxy" ]; then
             $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -m conntrack --ctstate NEW,RELATED -j CONNMARK --set-mark "$mark"
             $cmd -t "$table" -A "PROXY_PREROUTING$suffix" -p tcp -m connmark --mark "$mark" -j TPROXY --on-port "$PROXY_TCP_PORT" --tproxy-mark "$mark"
