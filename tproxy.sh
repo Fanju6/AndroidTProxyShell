@@ -669,7 +669,6 @@ download_file() {
             $wget_cmd -q -T 10 -t 3 -O "$output" "$url" || return 1
         fi
     fi
-    return 0
 }
 
 download_cn_ip_list() {
