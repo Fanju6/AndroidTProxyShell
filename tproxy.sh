@@ -1069,7 +1069,6 @@ setup_proxy_chain() {
         log Info "Other interface $OTHER_PROXY_INTERFACES will bypass proxy"
     fi
 
-    $cmd -t "$table" -A "PROXY_INTERFACE$suffix" -j ACCEPT
     log Info "Interface proxy rules configuration completed"
 
     local mac
